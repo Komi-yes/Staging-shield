@@ -1,0 +1,56 @@
+# Archivo de configuración de ejemplo para Staging Shield.
+# Describe el entorno de preproducción que se desea evaluar.
+#
+# Uso:
+#   staging-shield scan --config examples/config.yaml
+#
+# Todos los campos son opcionales salvo `environment.name` y al menos uno de
+# `target.domain` o `target.ip`. Cuanta más información se proporcione, más
+# SVR podrá evaluar el cliente automáticamente y menos quedarán como manuales.
+
+environment:
+  # Identificador legible del entorno. Aparece en reportes y en el historial.
+  name: "staging-app-pagos"
+  # Tipo de entorno: staging, qa, uat, dev. Solo informativo.
+  type: "staging"
+  # Tipo de stack: web, api, container, k8s, serverless. Afecta qué SVR
+  # son aplicables (por ejemplo, las HAR de hardening de host se omiten en
+  # serverless).
+  stack: "web"
+
+target:
+  # Dominio público o interno del entorno. Se acepta con o sin esquema.
+  domain: "staging.miempresa.com"
+  # IP del servidor (opcional, útil cuando no hay DNS o para verificar que
+  # la resolución coincide con la IP esperada).
+  ip: "10.20.30.40"
+
+# Lista de puertos que el responsable del entorno declara como esperados.
+# Cualquier puerto abierto fuera de esta lista se reportará como inesperado
+# (SVR-NET-04: superficie mínima).
+expected_ports:
+  - 80
+  - 443
+
+# Ruta local al repositorio del proyecto. Si se proporciona, el módulo de
+# descubrimiento ejecuta una búsqueda de secretos (SVR-IAM-04 / IAM-05) con
+# patrones para AWS keys, GitHub tokens, JWT, claves privadas, URLs con
+# credenciales embebidas, etc.
+repository:
+  path: "/home/usuario/proyectos/app-pagos"
+
+# Referencias a producción contra las cuales el entorno de staging NO debería
+# tener conectividad (SVR-NET-01: aislamiento de redes). Pueden ser IPs, hosts
+# o ambos. El cliente prueba TCP a puertos comunes y reporta cualquier conexión
+# exitosa como evidencia de aislamiento insuficiente.
+production:
+  references:
+    - "10.0.0.50"
+    - "db-prod.miempresa.com"
+
+# Interfaces administrativas esperadas. Pueden ser puertos numéricos o rutas
+# HTTP. Cuando se exponen sin restricción de IP origen el cliente lo reporta
+# como SVR-NET-08 (acceso administrativo restringido).
+admin_interfaces:
+  - "9090"
+  - "/admin"
