@@ -1,15 +1,15 @@
 // Package scoring implementa el Módulo 4 (Scoring) del programa cliente.
 // Aplica la fórmula del Security Score definida en el modelo:
 //
-//   Score = 100 × Σ(c_i × w_i × d_i) ÷ Σ(w_i × d_i)
+//	Score = 100 × Σ(c_i × w_i × d_i) ÷ Σ(w_i × d_i)
 //
 // Score por dominio:
 //
-//   Score(d) = 100 × Σ(c_i × w_i) ÷ Σ(w_i)
+//	Score(d) = 100 × Σ(c_i × w_i) ÷ Σ(w_i)
 //
 // Y la condición de aptitud:
 //
-//   Apto = 1 si no hay ninguna SVR crítica en estado 'no cumple'.
+//	Apto = 1 si no hay ninguna SVR crítica en estado 'no cumple'.
 //
 // Solo las reglas con StatusCumple, StatusCumpleParcial o StatusNoCumple
 // participan del cálculo. Las reglas manuales o sin evidencia se reportan
@@ -39,16 +39,25 @@ func DefaultDomainWeights() DomainWeight {
 
 // Stats agrupa el resultado completo del scoring sobre una corrida.
 type Stats struct {
-	GlobalScore       float64
-	DomainScores      map[ctx.Domain]float64
-	DomainCounts      map[ctx.Domain]DomainCount
-	TotalRules        int
-	StatusCounts      map[ctx.ComplianceStatus]int
-	CriticalFailures  []ctx.RuleResult // SVR críticas en estado no cumple
-	NotEvaluated      []ctx.RuleResult // Manuales + falta de evidencia
-	Failed            []ctx.RuleResult // No cumple, ordenadas por severidad desc
-	Apto              bool
-	AutoCoverage      float64 // % reglas evaluadas automáticamente vs total
+	GlobalScore      float64
+	DomainScores     map[ctx.Domain]float64
+	DomainCounts     map[ctx.Domain]DomainCount
+	TotalRules       int
+	StatusCounts     map[ctx.ComplianceStatus]int
+	CriticalFailures []ctx.RuleResult // SVR críticas en estado no cumple
+	NotEvaluated     []ctx.RuleResult // Manuales + falta de evidencia
+	Failed           []ctx.RuleResult // No cumple, ordenadas por severidad desc
+	Apto             bool
+	// AutoCoverage: % reglas resueltas por el motor automático.
+	// ManualCoverage: % reglas resueltas por veredicto humano (input --review).
+	// Coverage: cobertura total = % reglas con veredicto definitivo (auto + manual).
+	// La cobertura total es la métrica que el documento llama "cobertura"
+	// y la que debe acompañar al score global cuando se reporta postura.
+	AutoCoverage      float64
+	ManualCoverage    float64
+	Coverage          float64
+	EvaluatedRules    int                  // reglas con cumple/parcial/no-cumple
+	ManuallyReviewed  int                  // reglas con veredicto humano explícito
 	SeverityBreakdown map[ctx.Severity]int // distribución de severidades en NoCumple
 }
 
@@ -93,6 +102,7 @@ func Compute(ec *ctx.EvalContext, weights DomainWeight) Stats {
 	}
 
 	autoEvaluated := 0
+	manuallyReviewed := 0
 
 	for _, r := range ec.Results {
 		stats.TotalRules++
@@ -101,16 +111,33 @@ func Compute(ec *ctx.EvalContext, weights DomainWeight) Stats {
 		dc := stats.DomainCounts[r.Rule.Domain]
 		dc.Total++
 
+		// ¿Vino el veredicto de un humano (--review) o del motor automático?
+		// La diferencia se usa solo para reportar cobertura desglosada;
+		// el score se calcula igual en ambos casos.
+		fromHuman := r.Manual != nil
+
 		switch r.Status {
 		case ctx.StatusCumple:
 			dc.Cumple++
-			autoEvaluated++
+			if fromHuman {
+				manuallyReviewed++
+			} else {
+				autoEvaluated++
+			}
 		case ctx.StatusCumpleParcial:
 			dc.Parcial++
-			autoEvaluated++
+			if fromHuman {
+				manuallyReviewed++
+			} else {
+				autoEvaluated++
+			}
 		case ctx.StatusNoCumple:
 			dc.NoCumple++
-			autoEvaluated++
+			if fromHuman {
+				manuallyReviewed++
+			} else {
+				autoEvaluated++
+			}
 			stats.Failed = append(stats.Failed, r)
 			stats.SeverityBreakdown[r.Rule.Severity]++
 			if r.Rule.Critical {
@@ -160,10 +187,14 @@ func Compute(ec *ctx.EvalContext, weights DomainWeight) Stats {
 		stats.GlobalScore = 100.0 * globalNum / globalDen
 	}
 
-	// Cobertura automática
+	// Cobertura desglosada: automática (motor), manual (revisión humana) y total.
 	if stats.TotalRules > 0 {
 		stats.AutoCoverage = 100.0 * float64(autoEvaluated) / float64(stats.TotalRules)
+		stats.ManualCoverage = 100.0 * float64(manuallyReviewed) / float64(stats.TotalRules)
+		stats.Coverage = 100.0 * float64(autoEvaluated+manuallyReviewed) / float64(stats.TotalRules)
 	}
+	stats.EvaluatedRules = autoEvaluated + manuallyReviewed
+	stats.ManuallyReviewed = manuallyReviewed
 
 	// Ordenar fallas por severidad descendente, luego por ID
 	sort.SliceStable(stats.Failed, func(i, j int) bool {

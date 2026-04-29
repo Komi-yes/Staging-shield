@@ -16,10 +16,10 @@ import (
 )
 
 var (
-	histDirFlag    string
-	histEnvFilter  string
-	histLastN      int
-	histNoColorH   bool
+	histDirFlag   string
+	histEnvFilter string
+	histLastN     int
+	histNoColorH  bool
 )
 
 var historyCmd = &cobra.Command{
@@ -131,8 +131,8 @@ func printEvolution(snaps []storage.Snapshot, useColor bool) {
 	names := make([]string, 0, len(snaps))
 	for _, s := range snaps {
 		stats = append(stats, scoring.Stats{
-			GlobalScore: s.Stats.GlobalScore,
-			Apto:        s.Stats.Apto,
+			GlobalScore:  s.Stats.GlobalScore,
+			Apto:         s.Stats.Apto,
 			DomainScores: convertDomainScores(s.Stats.DomainScores),
 		})
 		names = append(names, s.Timestamp.UTC().Format("2006-01-02 15:04"))

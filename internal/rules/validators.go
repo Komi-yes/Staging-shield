@@ -419,7 +419,14 @@ func validateHar09(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 // Dominio: Identidades, acceso y secretos
 // =====================================================================
 
-// SVR-IAM-04: Sin secretos expuestos en código.
+// SVR-IAM-04: Sin secretos expuestos en código fuente o archivos públicos.
+//
+// Decisión clave: la regla habla de exposición *pública*. Un secreto que
+// solo existe en un archivo local no trackeado por git y no presente en el
+// historial no es exposición pública — es desarrollo local. Por eso, cuando
+// el repositorio es git, contamos como falla únicamente los hallazgos en
+// archivos trackeados o en historial. Si git no está disponible, caemos al
+// comportamiento previo (presencia en disco) para no perder señal.
 func validateIam04(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 	if ec.RepoPath == "" {
 		return ctx.RuleResult{
@@ -428,31 +435,98 @@ func validateIam04(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 			Notes:  "No se proporcionó 'repository.path'. Para automatizar esta verificación, indique la ruta local del repositorio en la configuración.",
 		}
 	}
-	n := len(ec.Discovery.SecretFindings)
-	if n == 0 {
+
+	totalFindings := len(ec.Discovery.SecretFindings)
+
+	// Sin repo git, no hay forma de distinguir local vs expuesto: usar la
+	// señal disponible (presencia en disco).
+	if !ec.Discovery.Git.Available {
+		if totalFindings == 0 {
+			return ctx.RuleResult{
+				Rule:     rule,
+				Status:   ctx.StatusCumple,
+				Evidence: fmt.Sprintf("Búsqueda en %s no encontró patrones de secretos en archivos de configuración, código o manifiestos.", ec.RepoPath),
+				Notes:    "El repositorio no es un repo git, por lo que no se pudo distinguir entre archivos públicos y solo locales. Inicialice git para una evaluación más justa.",
+			}
+		}
+		hi := countHighSeverity(ec.Discovery.SecretFindings)
+		st := ctx.StatusCumpleParcial
+		if hi > 0 {
+			st = ctx.StatusNoCumple
+		}
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   st,
+			Evidence: fmt.Sprintf("Se detectaron %d posibles secretos en el repositorio (%d de severidad alta). El repositorio no es git, no fue posible filtrar por exposición pública.", totalFindings, hi),
+			Notes:    "Rote las credenciales detectadas y muévalas a un gestor de secretos. Si son falsos positivos, márquelos en allowlist.",
+		}
+	}
+
+	// Con repo git: separar lo realmente expuesto de lo solo local.
+	exposed := []ctx.SecretFinding{}
+	historical := []ctx.SecretFinding{}
+	localOnly := []ctx.SecretFinding{}
+	for _, f := range ec.Discovery.SecretFindings {
+		switch {
+		case f.Tracked:
+			exposed = append(exposed, f)
+		case f.InHistory:
+			historical = append(historical, f)
+		default:
+			localOnly = append(localOnly, f)
+		}
+	}
+
+	if len(exposed) == 0 && len(historical) == 0 {
+		ev := fmt.Sprintf("No se encontraron secretos en archivos trackeados por git ni en el historial. Total escaneado: %d archivos. Hallazgos solo locales (no expuestos): %d.",
+			len(ec.Discovery.Git.TrackedFiles), len(localOnly))
+		notes := ""
+		if len(localOnly) > 0 {
+			notes = "Hay secretos en archivos locales no trackeados (típicamente .env de desarrollo). No constituyen exposición pública mientras .gitignore impida su inclusión accidental, pero conviene rotarlos si se sospecha que pudieron filtrarse por otra vía."
+		}
 		return ctx.RuleResult{
 			Rule:     rule,
 			Status:   ctx.StatusCumple,
-			Evidence: fmt.Sprintf("Búsqueda en %s no encontró patrones de secretos en archivos de configuración, código o manifiestos.", ec.RepoPath),
-			Notes:    "La detección por patrones tiene limitaciones; complemente con herramientas como git-secrets, trufflehog o gitleaks para mayor cobertura histórica.",
+			Evidence: ev,
+			Notes:    notes,
 		}
 	}
-	hi := 0
-	for _, f := range ec.Discovery.SecretFindings {
-		if f.Severity == "alto" {
-			hi++
-		}
+
+	hiExposed := countHighSeverity(exposed)
+	hiHist := countHighSeverity(historical)
+
+	parts := []string{}
+	if len(exposed) > 0 {
+		parts = append(parts, fmt.Sprintf("%d en archivos trackeados (%d severidad alta)", len(exposed), hiExposed))
 	}
+	if len(historical) > 0 {
+		parts = append(parts, fmt.Sprintf("%d en archivos del historial git (%d severidad alta)", len(historical), hiHist))
+	}
+	if len(localOnly) > 0 {
+		parts = append(parts, fmt.Sprintf("%d solo locales, no expuestos públicamente", len(localOnly)))
+	}
+
 	st := ctx.StatusCumpleParcial
-	if hi > 0 {
+	if hiExposed > 0 || hiHist > 0 {
 		st = ctx.StatusNoCumple
 	}
+
 	return ctx.RuleResult{
 		Rule:     rule,
 		Status:   st,
-		Evidence: fmt.Sprintf("Se detectaron %d posibles secretos en el repositorio (%d de severidad alta). Ver lista detallada en el reporte HTML/JSON.", n, hi),
-		Notes:    "Rote las credenciales detectadas y muévalas a un gestor de secretos. Si son falsos positivos, márquelos en allowlist.",
+		Evidence: "Hallazgos: " + strings.Join(parts, "; ") + ".",
+		Notes:    "Los secretos en archivos trackeados o en historial git deben considerarse comprometidos: rótelos de inmediato y muévalos a un gestor de secretos. Para limpiar el historial considere git filter-repo o BFG. Los hallazgos solo locales no afectan el score pero conviene revisarlos por higiene.",
 	}
+}
+
+func countHighSeverity(fs []ctx.SecretFinding) int {
+	n := 0
+	for _, f := range fs {
+		if f.Severity == "alto" {
+			n++
+		}
+	}
+	return n
 }
 
 // SVR-IAM-05: Auth fuerte en interfaces administrativas.
@@ -491,7 +565,20 @@ func validateIam05(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 }
 
 // SVR-IAM-07: Variables sensibles desde mecanismos apropiados.
-// Heurística: presencia de archivos .env en el repo y/o Postgres URL embebidas.
+//
+// Decisión clave: el problema de seguridad no es que exista un .env en el
+// disco del desarrollador — es que ese .env termine en el repositorio
+// remoto. El validador discrimina por estado de tracking:
+//
+//	.env trackeado por git           -> no cumple (alta) — exposición pública.
+//	.env en historial git            -> no cumple (alta) — recuperable de commits.
+//	.env existe + gitignored         -> cumple — práctica recomendada.
+//	.env existe + NO gitignored      -> cumple parcial — riesgo latente de commit accidental.
+//	no hay .env y no hay URLs/passwords embebidos en archivos trackeados -> cumple.
+//	credenciales embebidas en archivos trackeados -> no cumple.
+//
+// Cuando git no está disponible, cae al comportamiento previo basado en
+// presencia en disco para no perder señal.
 func validateIam07(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 	if ec.RepoPath == "" {
 		return ctx.RuleResult{
@@ -500,30 +587,117 @@ func validateIam07(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 			Notes:  "Sin repository.path no se puede inspeccionar archivos de configuración.",
 		}
 	}
-	envInRepo := false
-	urlsEmbedded := 0
-	for _, f := range ec.Discovery.SecretFindings {
-		if strings.HasSuffix(f.File, ".env") || f.File == ".env" {
-			envInRepo = true
+
+	// Sin git: heurística previa basada solo en presencia en disco.
+	if !ec.Discovery.Git.Available {
+		envInRepo := len(ec.Discovery.EnvFiles) > 0
+		urlsEmbedded := 0
+		for _, f := range ec.Discovery.SecretFindings {
+			if strings.Contains(f.Pattern, "URL") || f.Pattern == "Password Assignment" {
+				urlsEmbedded++
+			}
 		}
-		if strings.Contains(f.Pattern, "URL") || f.Pattern == "Password Assignment" {
-			urlsEmbedded++
+		if envInRepo || urlsEmbedded > 0 {
+			return ctx.RuleResult{
+				Rule:     rule,
+				Status:   ctx.StatusCumpleParcial,
+				Evidence: fmt.Sprintf("Archivos .env presentes=%v, URLs/credenciales embebidas en archivos escaneados=%d. Repo sin git: no fue posible determinar exposición pública.", envInRepo, urlsEmbedded),
+				Notes:    "Inicialice git en el repositorio para que el modelo distinga entre archivos solo locales y archivos efectivamente expuestos.",
+			}
+		}
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusCumple,
+			Evidence: "No se detectaron archivos .env ni credenciales embebidas en el repositorio escaneado.",
 		}
 	}
-	if envInRepo || urlsEmbedded > 0 {
+
+	// Con git: clasificar cada .env por estado de tracking.
+	tracked := []ctx.EnvFileFinding{}
+	historical := []ctx.EnvFileFinding{}
+	gitignored := []ctx.EnvFileFinding{}
+	notIgnored := []ctx.EnvFileFinding{} // existe en disco, no trackeado, no en historial, no gitignored
+	for _, f := range ec.Discovery.EnvFiles {
+		switch {
+		case f.Tracked:
+			tracked = append(tracked, f)
+		case f.InHistory:
+			historical = append(historical, f)
+		case f.Gitignored:
+			gitignored = append(gitignored, f)
+		default:
+			notIgnored = append(notIgnored, f)
+		}
+	}
+
+	// URLs/credenciales embebidas en archivos *trackeados* (no las que solo viven local)
+	embeddedTracked := 0
+	for _, f := range ec.Discovery.SecretFindings {
+		if !f.Tracked && !f.InHistory {
+			continue
+		}
+		if strings.Contains(f.Pattern, "URL") || f.Pattern == "Password Assignment" {
+			embeddedTracked++
+		}
+	}
+
+	// Caso crítico: hay un .env trackeado o en historial, o credenciales en archivos trackeados.
+	if len(tracked) > 0 || len(historical) > 0 || embeddedTracked > 0 {
+		parts := []string{}
+		if len(tracked) > 0 {
+			parts = append(parts, fmt.Sprintf("archivos .env actualmente trackeados por git: %s", envFileList(tracked)))
+		}
+		if len(historical) > 0 {
+			parts = append(parts, fmt.Sprintf("archivos .env presentes en el historial git (recuperables aunque hoy no estén): %s", envFileList(historical)))
+		}
+		if embeddedTracked > 0 {
+			parts = append(parts, fmt.Sprintf("%d credenciales/URLs embebidas en archivos trackeados", embeddedTracked))
+		}
 		return ctx.RuleResult{
 			Rule:     rule,
 			Status:   ctx.StatusNoCumple,
-			Evidence: fmt.Sprintf("Archivos con variables sensibles embebidas: .env en repositorio=%v, URLs/credenciales embebidas=%d.", envInRepo, urlsEmbedded),
-			Notes:    "Use un gestor de secretos (Vault, AWS Secrets Manager, Doppler) o variables de entorno inyectadas por el orquestador. Excluya .env del control de versiones.",
+			Evidence: "Variables sensibles efectivamente expuestas: " + strings.Join(parts, "; ") + ".",
+			Notes:    "Rote las credenciales filtradas, agregue el archivo a .gitignore y elimine su rastro del historial (git filter-repo o BFG). Inyecte las variables en tiempo de despliegue desde un gestor de secretos (Vault, AWS Secrets Manager, Doppler) o variables del orquestador.",
+		}
+	}
+
+	// Caso intermedio: el .env existe pero NO está en .gitignore.
+	// No hay exposición hoy, pero el siguiente commit puede crearla.
+	if len(notIgnored) > 0 {
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusCumpleParcial,
+			Evidence: fmt.Sprintf("Existen archivos .env locales que no están en .gitignore: %s. Hoy no están trackeados, pero un 'git add .' accidental los expondría.", envFileList(notIgnored)),
+			Notes:    "Agregue una entrada al .gitignore (típicamente '.env' o '.env.local') para prevenir commits accidentales. La buena noticia: hoy no hay exposición real.",
+		}
+	}
+
+	// Caso favorable: o no hay .env, o todos los que existen están .gitignored.
+	if len(gitignored) > 0 {
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusCumple,
+			Evidence: fmt.Sprintf("Archivos .env presentes únicamente como configuración local de desarrollo y correctamente excluidos de git por .gitignore: %s.", envFileList(gitignored)),
+			Notes:    "Confirme que las variables sensibles en producción se inyectan desde un mecanismo apropiado (gestor de secretos / variables del orquestador) y no desde estos archivos.",
 		}
 	}
 	return ctx.RuleResult{
 		Rule:     rule,
-		Status:   ctx.StatusCumpleParcial,
-		Evidence: "No se detectaron archivos .env ni URLs con credenciales embebidas en el repositorio escaneado.",
-		Notes:    "Confirme que las variables sensibles se inyectan en tiempo de despliegue desde un mecanismo apropiado.",
+		Status:   ctx.StatusCumple,
+		Evidence: "No se detectaron archivos .env ni credenciales embebidas en archivos trackeados por git.",
 	}
+}
+
+// envFileList formatea una lista de hallazgos .env para el reporte.
+func envFileList(fs []ctx.EnvFileFinding) string {
+	if len(fs) == 0 {
+		return "(ninguno)"
+	}
+	names := make([]string, 0, len(fs))
+	for _, f := range fs {
+		names = append(names, f.Path)
+	}
+	return strings.Join(names, ", ")
 }
 
 // =====================================================================

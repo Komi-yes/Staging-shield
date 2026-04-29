@@ -176,17 +176,47 @@ El cliente está organizado en **5 módulos** que se ejecutan en pipeline:
 
 ---
 
-## Cobertura de automatización
+## Cobertura
 
-De las 36 SVR, el cliente automatiza ~17 **completamente** y otras varias en
-modo **semi-automático** (recolecta evidencia, marca para revisión humana). Las
-reglas que requieren juicio humano (políticas, procedimientos, propietarios)
-quedan en estado **`manual_requerido`** con la evidencia disponible para que un
-evaluador la complete posteriormente. Estas reglas no contaminan el score (el
-cálculo solo considera Cumple / Parcial / No cumple).
+El cliente reporta **tres métricas de cobertura** en cada corrida:
 
-La cobertura automatizada se reporta como **AutoCoverage** en cada corrida,
-permitiendo verificar SVR-MON-08 (alcance del modelo es transparente).
+- **Cobertura automática** — % de SVR resueltas por el motor (DNS, puertos, TLS, headers, escaneo de secretos consciente de git, etc.).
+- **Cobertura manual** — % de SVR resueltas por veredicto humano vía `--review` o desde el centro de revisión del HTML.
+- **Cobertura total** — la suma de las dos anteriores. Es la métrica que debe acompañar al Security Score: un score de 90 con cobertura del 30% no significa lo mismo que con cobertura del 90%.
+
+De las 36 SVR, el cliente automatiza **17** de forma directa o semi-automática. Las restantes 19 dependen de juicio humano (políticas, procedimientos, acceso administrativo). Para que estas no queden permanentemente fuera del cálculo, el cliente expone dos vías de revisión manual:
+
+### Centro de revisión interactivo (HTML)
+
+El reporte HTML incluye un panel donde cada SVR manual o sin evidencia tiene controles **Cumple / Cumple parcialmente / No cumple / No aplica** más un campo de evidencia. Al cambiar un veredicto:
+
+- El score por dominio, score global y aptitud se recalculan en vivo.
+- La cobertura total sube reflejando el progreso de la revisión.
+- Cuando termina, **Exportar revisión** descarga un archivo YAML que la CLI puede consumir.
+
+### Archivo de revisión (CLI)
+
+```bash
+staging-shield scan --config staging.yaml --review revision.yaml
+```
+
+El archivo `revision.yaml` (formato en `examples/review.yaml`) contiene veredictos persistentes que se aplican antes del scoring. Esto cierra el ciclo: el evaluador revisa interactivamente en el HTML, exporta el YAML, lo commitea junto con la configuración del entorno, y la próxima corrida ya parte con esa evidencia incorporada — la cobertura no se pierde entre ejecuciones.
+
+---
+
+## Detección de secretos consciente de git
+
+El validador SVR-IAM-04 (secretos en código) y SVR-IAM-07 (variables sensibles) **no penalizan archivos `.env` solo locales**. Un `.env` en `.gitignore` con credenciales de desarrollo es la práctica recomendada, no una falla. La lógica:
+
+| Estado del `.env` | SVR-IAM-07 |
+|---|---|
+| Trackeado por git actualmente | **No cumple** (alta) — exposición pública. |
+| Presente en historial git aunque hoy no esté | **No cumple** (alta) — recuperable de commits previos. |
+| Existe en disco + en `.gitignore` | **Cumple** — práctica recomendada. |
+| Existe en disco + no en `.gitignore` | **Cumple parcial** — riesgo latente de commit accidental. |
+| No existe | **Cumple**. |
+
+Los secretos detectados por patrón (AWS keys, tokens, URLs con credenciales) se etiquetan con su estado de exposición en el reporte HTML: solo los que están en archivos trackeados o en historial penalizan SVR-IAM-04. Cuando el repositorio no es git, los validadores caen al comportamiento previo (presencia en disco) y lo notifican en el reporte.
 
 ---
 
@@ -202,13 +232,15 @@ Resumen coloreado con:
 - Listado priorizado de fallos (severidad descendente).
 - Hallazgos críticos destacados.
 
-### HTML
+### HTML interactivo
 
 Reporte responsivo con tema oscuro, embebido en el binario. Incluye:
 
-- Header con score, dominio scores, aptitud.
-- Tabla completa de las 36 SVR con su estado, severidad, evidencia y notas.
-- Sección de descubrimiento (puertos, TLS, headers, secretos redactados).
+- Header con score, score por dominio (con barras), cobertura total/auto/manual y aptitud.
+- **Centro de revisión manual** con barra de progreso y controles Cumple / Parcial / No cumple / No aplica para cada SVR pendiente. El score, la cobertura y la aptitud se recalculan en vivo al marcar veredictos.
+- Botones de **Exportar revisión** (genera el YAML que la CLI consume con `--review`) e **Importar revisión**.
+- Tabla completa de las 36 SVR con estado, severidad, evidencia, notas y, donde aplique, los controles de revisión.
+- Sección de evidencia técnica con puertos, TLS, headers, secretos redactados (con columna de exposición trackeado/historial/local) y archivos `.env` analizados con su estado de tracking en git.
 
 ### JSON (historial)
 

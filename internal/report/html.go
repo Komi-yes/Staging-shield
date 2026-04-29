@@ -21,33 +21,35 @@ var htmlTemplate string
 
 // htmlData es lo que se le pasa a la plantilla.
 type htmlData struct {
-	Env             *ctx.EvalContext
-	Stats           scoring.Stats
-	GeneratedAt     string
-	DomainList      []domainView
-	CriticalView    []ruleView
-	FailedView      []ruleView
-	NoEvidenceView  []ruleView
-	ManualView      []ruleView
-	PassedView      []ruleView
-	Recommendations []string
-	OpenPortsList   []string
-	SecretsCount    int
-	HighSecrets     int
-	Discovery       discoveryView
+	Env              *ctx.EvalContext
+	Stats            scoring.Stats
+	GeneratedAt      string
+	DomainList       []domainView
+	CriticalView     []ruleView
+	FailedView       []ruleView
+	NoEvidenceView   []ruleView
+	ManualView       []ruleView
+	PassedView       []ruleView
+	Recommendations  []string
+	OpenPortsList    []string
+	SecretsCount     int
+	HighSecrets      int
+	TrackedSecrets   int // secretos en archivos trackeados o en historial
+	ManualSlotsTotal int // total de SVR únicas que el usuario puede revisar manualmente
+	Discovery        discoveryView
 }
 
 type domainView struct {
-	Name      string
-	Score     float64
-	ScoreStr  string
-	BarPct    float64
-	BadgeCls  string
-	Cumple    int
-	Parcial   int
-	NoCumple  int
-	NoEval    int
-	Total     int
+	Name     string
+	Score    float64
+	ScoreStr string
+	BarPct   float64
+	BadgeCls string
+	Cumple   int
+	Parcial  int
+	NoCumple int
+	NoEval   int
+	Total    int
 }
 
 type ruleView struct {
@@ -56,29 +58,34 @@ type ruleView struct {
 	Criterion string
 	Severity  string
 	SevClass  string
+	SevWeight int // peso numérico (1, 2, 3) para el JS
 	Reference string
 	Mode      string
 	Status    string
 	StatusCls string
+	StatusKey string // "cumple" | "parcial" | "nocumple" | "manual" | "missing" | "pending" — clave canónica para el JS
 	Evidence  string
 	Notes     string
 	Critical  bool
+	CanReview bool // true si el usuario puede emitir veredicto manual sobre esta regla desde el HTML
 }
 
 type discoveryView struct {
-	HasDNS       bool
-	DNSResolved  []string
-	DNSError     string
-	OpenPorts    []ctx.PortFinding
-	UnexpectedPorts []int
-	MissingPorts []int
-	TLS          ctx.TLSFinding
-	HTTPHeaders  []headerView
-	HTTPStatus   int
-	AdminExposed []ctx.AdminFinding
-	Legacy       []int
+	HasDNS              bool
+	DNSResolved         []string
+	DNSError            string
+	OpenPorts           []ctx.PortFinding
+	UnexpectedPorts     []int
+	MissingPorts        []int
+	TLS                 ctx.TLSFinding
+	HTTPHeaders         []headerView
+	HTTPStatus          int
+	AdminExposed        []ctx.AdminFinding
+	Legacy              []int
 	ProductionReachable []string
-	Secrets      []ctx.SecretFinding
+	Secrets             []ctx.SecretFinding
+	Git                 ctx.GitContext
+	EnvFiles            []ctx.EnvFileFinding
 }
 
 type headerView struct {
@@ -96,6 +103,11 @@ func WriteHTML(path string, ec *ctx.EvalContext, stats scoring.Stats) error {
 	tmpl, err := template.New("report").Funcs(template.FuncMap{
 		"join":   strings.Join,
 		"intCSV": intCSV,
+		// 'js' escapa cadenas para que sean seguras al inyectarlas en
+		// posiciones JS (con comillas dobles). html/template ya escapa
+		// HTML por defecto, pero para los literales JSON inline en el
+		// bloque <script> necesitamos escape JS específico.
+		"js": jsString,
 	}).Parse(htmlTemplate)
 	if err != nil {
 		return fmt.Errorf("parseando plantilla: %w", err)
@@ -106,6 +118,41 @@ func WriteHTML(path string, ec *ctx.EvalContext, stats scoring.Stats) error {
 	}
 	defer f.Close()
 	return tmpl.Execute(f, data)
+}
+
+// jsString convierte una cadena en un literal JS seguro entre comillas dobles.
+// Reemplaza caracteres de control y comillas para evitar XSS y errores de parseo.
+func jsString(s string) string {
+	out := strings.Builder{}
+	out.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			out.WriteString(`\\`)
+		case '"':
+			out.WriteString(`\"`)
+		case '\n':
+			out.WriteString(`\n`)
+		case '\r':
+			out.WriteString(`\r`)
+		case '\t':
+			out.WriteString(`\t`)
+		case '<':
+			out.WriteString(`\u003c`)
+		case '>':
+			out.WriteString(`\u003e`)
+		case '&':
+			out.WriteString(`\u0026`)
+		default:
+			if r < 0x20 {
+				fmt.Fprintf(&out, `\u%04x`, r)
+			} else {
+				out.WriteRune(r)
+			}
+		}
+	}
+	out.WriteByte('"')
+	return out.String()
 }
 
 func buildHTMLData(ec *ctx.EvalContext, stats scoring.Stats) htmlData {
@@ -193,6 +240,8 @@ func buildHTMLData(ec *ctx.EvalContext, stats scoring.Stats) htmlData {
 		Legacy:              ec.Discovery.LegacyServices,
 		ProductionReachable: ec.Discovery.ProductionReachable,
 		Secrets:             ec.Discovery.SecretFindings,
+		Git:                 ec.Discovery.Git,
+		EnvFiles:            ec.Discovery.EnvFiles,
 	}
 	for k, v := range ec.Discovery.HTTPHeaders {
 		data.Discovery.HTTPHeaders = append(data.Discovery.HTTPHeaders, headerView{Name: k, Value: v})
@@ -206,7 +255,20 @@ func buildHTMLData(ec *ctx.EvalContext, stats scoring.Stats) htmlData {
 		if s.Severity == "alto" {
 			data.HighSecrets++
 		}
+		if s.Tracked || s.InHistory {
+			data.TrackedSecrets++
+		}
 	}
+
+	// Total de SVR únicas que pueden recibir veredicto manual desde el HTML.
+	// Equivale a |ManualView ∪ NoEvidenceView|, pero sin contar duplicados.
+	manualSlotIDs := make(map[string]struct{})
+	for _, r := range ec.Results {
+		if r.Status == ctx.StatusManualRequerido || r.Status == ctx.StatusFaltaEvidencia {
+			manualSlotIDs[r.Rule.ID] = struct{}{}
+		}
+	}
+	data.ManualSlotsTotal = len(manualSlotIDs)
 
 	// Lista cómoda de puertos abiertos como strings
 	for _, f := range ec.Discovery.OpenPorts {
@@ -227,13 +289,41 @@ func toRuleView(r ctx.RuleResult) ruleView {
 		Criterion: r.Rule.Criterion,
 		Severity:  r.Rule.Severity.String(),
 		SevClass:  severityClass(r.Rule.Severity),
+		SevWeight: int(r.Rule.Severity), // 1, 2, 3
 		Reference: r.Rule.Reference,
 		Mode:      r.Rule.Mode.String(),
 		Status:    r.Status.String(),
 		StatusCls: statusClass(r.Status),
+		StatusKey: statusKey(r.Status),
 		Evidence:  r.Evidence,
 		Notes:     r.Notes,
 		Critical:  r.Rule.Critical,
+		// Solo permitimos revisión manual desde la UI sobre reglas que el
+		// motor automático no resolvió definitivamente. Las reglas que ya
+		// están en cumple/parcial/no-cumple por evidencia técnica no se
+		// pueden sobreescribir desde el HTML para no permitir que un
+		// veredicto humano "olvide" hallazgos del motor (la CLI sí lo
+		// permite con el sufijo _force, pero deliberadamente).
+		CanReview: r.Status == ctx.StatusManualRequerido || r.Status == ctx.StatusFaltaEvidencia,
+	}
+}
+
+// statusKey devuelve la clave canónica del estado, usada por el JS para
+// determinar el peso c_i de la regla durante el recálculo en vivo.
+func statusKey(s ctx.ComplianceStatus) string {
+	switch s {
+	case ctx.StatusCumple:
+		return "cumple"
+	case ctx.StatusCumpleParcial:
+		return "parcial"
+	case ctx.StatusNoCumple:
+		return "nocumple"
+	case ctx.StatusFaltaEvidencia:
+		return "missing"
+	case ctx.StatusManualRequerido:
+		return "manual"
+	default:
+		return "pending"
 	}
 }
 

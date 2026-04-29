@@ -11,6 +11,7 @@ import (
 	ctx "github.com/stagingshield/staging-shield/internal/context"
 	"github.com/stagingshield/staging-shield/internal/discovery"
 	"github.com/stagingshield/staging-shield/internal/report"
+	"github.com/stagingshield/staging-shield/internal/review"
 	"github.com/stagingshield/staging-shield/internal/rules"
 	"github.com/stagingshield/staging-shield/internal/scoring"
 	"github.com/stagingshield/staging-shield/internal/storage"
@@ -27,6 +28,7 @@ var (
 	scanRepo        string
 	scanProdRefs    []string
 	scanAdminPorts  []string
+	scanReviewFile  string
 	scanHTMLOut     string
 	scanJSONHistory string
 	scanHistoryDir  string
@@ -42,10 +44,24 @@ var scanCmd = &cobra.Command{
 	Long: `El comando scan ejecuta los cinco módulos del modelo en orden:
 
   1. Entrada       — carga config (YAML y/o flags) y construye el contexto.
-  2. Descubrimiento — DNS, puertos, TLS, HTTP, secretos, prod, admin, legacy.
+  2. Descubrimiento — DNS, puertos, TLS, HTTP, secretos, prod, admin, legacy,
+                     contexto git (tracked / historial / .gitignore).
   3. Validación    — aplica las 36 SVR contra la evidencia recolectada.
+  3b. Revisión     — si --review está presente, sobreescribe los resultados
+                     de las reglas manuales y de falta-evidencia con los
+                     veredictos humanos del archivo YAML proporcionado.
   4. Scoring       — calcula score global, score por dominio y aptitud.
   5. Reporte       — emite consola (siempre) + HTML/JSON opcionales.
+
+El archivo --review puede generarse desde el centro de revisión del reporte
+HTML (botón "Exportar revisión") o escribirse a mano. Su formato:
+
+  reviewer: "Nombre del Evaluador"
+  timestamp: 2026-04-28T14:00:00Z
+  verdicts:
+    SVR-NET-02:
+      status: cumple                  # cumple | cumple_parcial | no_cumple | no_aplica
+      evidence: "Justificación de la decisión humana."
 
 Si no se proporciona --config, todos los datos del entorno deben venir por flags.
 Si se proporciona --config, los flags lo sobreescriben campo a campo.`,
@@ -63,6 +79,7 @@ func init() {
 	f.StringVarP(&scanRepo, "repo", "r", "", "Ruta local al repositorio del proyecto (para detección de secretos)")
 	f.StringSliceVar(&scanProdRefs, "prod-refs", nil, "IPs/hosts de producción (para validar aislamiento)")
 	f.StringSliceVar(&scanAdminPorts, "admin-interfaces", nil, "Puertos/rutas administrativos esperados, p.ej. 9090,/admin")
+	f.StringVar(&scanReviewFile, "review", "", "Archivo YAML con veredictos manuales (exportado desde el reporte HTML o escrito a mano)")
 	f.StringVar(&scanHTMLOut, "html-out", "", "Archivo de salida HTML (opcional)")
 	f.StringVar(&scanJSONHistory, "json-out", "", "Archivo JSON adicional de salida (opcional, además del historial)")
 	f.StringVar(&scanHistoryDir, "history-dir", "", "Directorio de historial (default: ~/.staging-shield/history)")
@@ -89,6 +106,27 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	// 3. VALIDACIÓN -----------------------------------------------------
 	rules.Validate(ec)
+
+	// 3b. REVISIÓN MANUAL (opcional) -------------------------------------
+	// Si el evaluador proporcionó un archivo de revisión, sobreescribimos
+	// los resultados de las reglas manuales o sin evidencia con el
+	// veredicto humano. Esto cierra la brecha entre la postura técnica y la
+	// postura organizacional, y hace que las 13+ reglas manuales del
+	// catálogo dejen de quedar fuera del cálculo.
+	if scanReviewFile != "" {
+		rev, err := review.Load(scanReviewFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Aviso: no se pudo cargar revisión manual (%v). Se continúa sin ella.\n", err)
+		} else {
+			n, unknown := review.Apply(ec.Results, rev)
+			if scanVerbose {
+				fmt.Printf("[revisión] %d veredictos aplicados desde %s\n", n, scanReviewFile)
+			}
+			if len(unknown) > 0 {
+				fmt.Fprintf(os.Stderr, "Aviso: el archivo de revisión menciona IDs no encontrados: %s\n", strings.Join(unknown, ", "))
+			}
+		}
+	}
 
 	// 4. SCORING --------------------------------------------------------
 	stats := scoring.Compute(ec, scoring.DefaultDomainWeights())

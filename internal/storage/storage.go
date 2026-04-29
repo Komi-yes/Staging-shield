@@ -30,12 +30,16 @@ type Snapshot struct {
 
 // SnapshotStats es la versión serializable de scoring.Stats.
 type SnapshotStats struct {
-	GlobalScore   float64                   `json:"global_score"`
-	DomainScores  map[string]float64        `json:"domain_scores"`
-	Apto          bool                      `json:"apto"`
-	AutoCoverage  float64                   `json:"auto_coverage"`
-	StatusCounts  map[string]int            `json:"status_counts"`
-	CriticalFails []string                  `json:"critical_failures"` // IDs
+	GlobalScore      float64            `json:"global_score"`
+	DomainScores     map[string]float64 `json:"domain_scores"`
+	Apto             bool               `json:"apto"`
+	AutoCoverage     float64            `json:"auto_coverage"`
+	ManualCoverage   float64            `json:"manual_coverage"`
+	Coverage         float64            `json:"coverage"`
+	ManuallyReviewed int                `json:"manually_reviewed"`
+	EvaluatedRules   int                `json:"evaluated_rules"`
+	StatusCounts     map[string]int     `json:"status_counts"`
+	CriticalFails    []string           `json:"critical_failures"` // IDs
 }
 
 // DefaultDir es el directorio donde se guardan los reportes JSON.
@@ -130,18 +134,22 @@ func buildSnapshot(ec *ctx.EvalContext, stats scoring.Stats) Snapshot {
 	}
 
 	return Snapshot{
-		Version:     "1.0",
+		Version:     "1.1",
 		Environment: ec.EnvironmentName,
 		Stack:       ec.StackType,
 		Target:      ec.Target,
 		Timestamp:   ec.Timestamp,
 		Stats: SnapshotStats{
-			GlobalScore:   stats.GlobalScore,
-			DomainScores:  domScores,
-			Apto:          stats.Apto,
-			AutoCoverage:  stats.AutoCoverage,
-			StatusCounts:  statusCounts,
-			CriticalFails: crit,
+			GlobalScore:      stats.GlobalScore,
+			DomainScores:     domScores,
+			Apto:             stats.Apto,
+			AutoCoverage:     stats.AutoCoverage,
+			ManualCoverage:   stats.ManualCoverage,
+			Coverage:         stats.Coverage,
+			ManuallyReviewed: stats.ManuallyReviewed,
+			EvaluatedRules:   stats.EvaluatedRules,
+			StatusCounts:     statusCounts,
+			CriticalFails:    crit,
 		},
 		Results:   ec.Results,
 		Discovery: ec.Discovery,

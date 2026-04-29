@@ -33,12 +33,12 @@ func (s Severity) String() string {
 type ComplianceStatus int
 
 const (
-	StatusPendiente        ComplianceStatus = iota // No evaluada todavía
-	StatusCumple                                   // c_i = 1.0
-	StatusCumpleParcial                            // c_i = 0.5
-	StatusNoCumple                                 // c_i = 0.0
-	StatusFaltaEvidencia                           // No verificable automáticamente, sin evidencia
-	StatusManualRequerido                          // Requiere revisión manual (excluida del cálculo)
+	StatusPendiente       ComplianceStatus = iota // No evaluada todavía
+	StatusCumple                                  // c_i = 1.0
+	StatusCumpleParcial                           // c_i = 0.5
+	StatusNoCumple                                // c_i = 0.0
+	StatusFaltaEvidencia                          // No verificable automáticamente, sin evidencia
+	StatusManualRequerido                         // Requiere revisión manual (excluida del cálculo)
 )
 
 func (c ComplianceStatus) String() string {
@@ -119,15 +119,15 @@ func AllDomains() []Domain {
 
 // SVR (Security Verification Rule) es la unidad básica de evaluación.
 type SVR struct {
-	ID         string
-	Domain     Domain
-	Criterion  string
-	Evidence   string
-	Method     string
-	Severity   Severity
-	Reference  string
-	Mode       ValidationMode
-	Critical   bool // Si true, su incumplimiento bloquea la promoción del entorno.
+	ID        string
+	Domain    Domain
+	Criterion string
+	Evidence  string
+	Method    string
+	Severity  Severity
+	Reference string
+	Mode      ValidationMode
+	Critical  bool // Si true, su incumplimiento bloquea la promoción del entorno.
 }
 
 // RuleResult es el resultado de evaluar una SVR sobre el contexto actual.
@@ -136,6 +136,20 @@ type RuleResult struct {
 	Status   ComplianceStatus `json:"status"`
 	Evidence string           `json:"evidence"` // Evidencia concreta recopilada
 	Notes    string           `json:"notes"`    // Notas para el evaluador
+	// Manual queda no-nil cuando un evaluador completó una verificación
+	// manual o sobreescribió un resultado automático mediante un archivo de
+	// revisión (--review). El módulo de scoring no necesita conocer este
+	// campo: para cuando se ejecuta, Status ya refleja el veredicto humano.
+	Manual *ManualVerdict `json:"manual,omitempty"`
+}
+
+// ManualVerdict registra la decisión humana sobre una SVR. Se conserva en el
+// snapshot para que la trazabilidad siga viva entre corridas (SVR-MON-03).
+type ManualVerdict struct {
+	Reviewer   string    `json:"reviewer,omitempty"`
+	ReviewedAt time.Time `json:"reviewed_at,omitempty"`
+	Evidence   string    `json:"evidence,omitempty"`
+	Notes      string    `json:"notes,omitempty"`
 }
 
 // EvalContext acumula toda la información que los módulos van produciendo
@@ -166,20 +180,55 @@ type EvalContext struct {
 // DiscoveryData almacena la evidencia técnica recopilada por el módulo
 // de Descubrimiento. Es lo que el módulo de Validación contrasta contra cada SVR.
 type DiscoveryData struct {
-	DNSResolved   []string
-	DNSError      string
-	OpenPorts     []PortFinding
-	UnexpectedPorts []int
-	MissingPorts  []int
-	TLS           TLSFinding
-	HTTPHeaders   map[string]string
-	HTTPStatus    int
-	HTTPError     string
-	Banners       map[int]string // puerto -> banner detectado
-	SecretFindings []SecretFinding
+	DNSResolved         []string
+	DNSError            string
+	OpenPorts           []PortFinding
+	UnexpectedPorts     []int
+	MissingPorts        []int
+	TLS                 TLSFinding
+	HTTPHeaders         map[string]string
+	HTTPStatus          int
+	HTTPError           string
+	Banners             map[int]string // puerto -> banner detectado
+	SecretFindings      []SecretFinding
 	ProductionReachable []string // hosts de prod alcanzables (mala señal)
-	AdminExposed  []AdminFinding
-	LegacyServices []int // puertos heredados encontrados
+	AdminExposed        []AdminFinding
+	LegacyServices      []int // puertos heredados encontrados
+
+	// Contexto de git: necesario para distinguir secretos realmente
+	// expuestos (en archivos trackeados o en el historial) de los que solo
+	// existen en el equipo de desarrollo y no se han propagado.
+	Git GitContext `json:"git"`
+
+	// Hallazgos específicos sobre archivos .env / variables de entorno.
+	// Se separan del listado general de secretos porque el criterio de
+	// SVR-IAM-07 depende del estado de tracking de cada archivo y no del
+	// contenido por sí solo.
+	EnvFiles []EnvFileFinding `json:"env_files"`
+}
+
+// GitContext describe el estado del repositorio frente a git. Cuando el
+// repositorio no es un repo git, o git no está disponible en el PATH, el
+// campo Available queda en false y los validadores caen al comportamiento
+// previo (basado solo en presencia de archivos en disco).
+type GitContext struct {
+	Available     bool     `json:"available"`
+	Error         string   `json:"error,omitempty"`
+	TrackedFiles  []string `json:"tracked_files,omitempty"` // rutas relativas trackeadas hoy
+	HistoryFiles  []string `json:"history_files,omitempty"` // archivos que alguna vez existieron en el historial
+	GitignoreSeen bool     `json:"gitignore_seen"`
+}
+
+// EnvFileFinding describe el estado de un archivo .env (o equivalente)
+// detectado en el repositorio. Es la base para evaluar SVR-IAM-07 con
+// criterio justo: un .env solo local y gitignored no es exposición de
+// secretos, mientras que uno trackeado o en historial sí lo es.
+type EnvFileFinding struct {
+	Path       string `json:"path"`
+	Tracked    bool   `json:"tracked"`
+	InHistory  bool   `json:"in_history"`
+	Gitignored bool   `json:"gitignored"`
+	HasSecrets bool   `json:"has_secrets"`
 }
 
 // PortFinding describe un puerto abierto detectado.
@@ -191,25 +240,32 @@ type PortFinding struct {
 
 // TLSFinding es el resultado del análisis del canal TLS.
 type TLSFinding struct {
-	Tested        bool      `json:"tested"`
-	Available     bool      `json:"available"`
-	Version       string    `json:"version"`
-	CipherSuite   string    `json:"cipher_suite"`
-	CertSubject   string    `json:"cert_subject"`
-	CertIssuer    string    `json:"cert_issuer"`
-	NotAfter      time.Time `json:"not_after"`
-	IsExpired     bool      `json:"is_expired"`
-	IsTLS13       bool      `json:"is_tls13"`
-	Error         string    `json:"error,omitempty"`
+	Tested      bool      `json:"tested"`
+	Available   bool      `json:"available"`
+	Version     string    `json:"version"`
+	CipherSuite string    `json:"cipher_suite"`
+	CertSubject string    `json:"cert_subject"`
+	CertIssuer  string    `json:"cert_issuer"`
+	NotAfter    time.Time `json:"not_after"`
+	IsExpired   bool      `json:"is_expired"`
+	IsTLS13     bool      `json:"is_tls13"`
+	Error       string    `json:"error,omitempty"`
 }
 
 // SecretFinding describe un secreto presuntamente expuesto en el repositorio.
 type SecretFinding struct {
-	File      string `json:"file"`
-	Line      int    `json:"line"`
-	Pattern   string `json:"pattern"`
-	Match     string `json:"match"` // recortado/redactado
-	Severity  string `json:"severity"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Pattern  string `json:"pattern"`
+	Match    string `json:"match"` // recortado/redactado
+	Severity string `json:"severity"`
+	// Tracked indica si el archivo está actualmente trackeado por git.
+	// InHistory indica si el archivo aparece en el historial aunque hoy no
+	// esté trackeado (un .env removido pero histórico sigue siendo riesgo).
+	// Si el repositorio no es un repo git, ambos quedan en false y los
+	// validadores deben usar la heurística previa (presencia en disco).
+	Tracked   bool `json:"tracked"`
+	InHistory bool `json:"in_history"`
 }
 
 // AdminFinding describe un punto administrativo expuesto.

@@ -183,6 +183,126 @@
 
   code { font-family: ui-monospace, "SF Mono", Menlo, monospace; background: var(--bg-card-2); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
 
+  /* ====== Centro de revisión manual ====== */
+  .review-center {
+    background: linear-gradient(135deg, rgba(79,156,249,0.08), rgba(79,156,249,0.02));
+    border: 1px solid rgba(79,156,249,0.3);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 24px;
+  }
+  .review-center h2 { margin: 0 0 6px; font-size: 16px; }
+  .review-center .subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 14px; }
+  .review-center .progress-row {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  .progress-bar {
+    flex: 1; min-width: 200px; height: 10px;
+    background: var(--bg-card-2); border-radius: 5px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: var(--accent);
+    transition: width 0.25s ease-out;
+  }
+  .progress-text { font-weight: 600; font-size: 13px; }
+  .progress-text .muted { color: var(--text-dim); font-weight: 400; }
+
+  .review-actions {
+    display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px;
+  }
+  .btn {
+    background: var(--bg-card-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 7px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.primary:hover { filter: brightness(1.1); color: #fff; }
+  .btn.ghost { background: transparent; }
+
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    padding: 12px 18px; border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    color: var(--text); font-size: 13px;
+    opacity: 0; pointer-events: none;
+    transform: translateY(8px); transition: all 0.2s ease;
+    z-index: 1000;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+  .toast.success { border-color: var(--good); }
+  .toast.error   { border-color: var(--bad); }
+
+  /* ====== Controles de revisión manual por regla ====== */
+  .review-controls {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--bg-card-2);
+    border-radius: 6px;
+    border: 1px dashed var(--border);
+  }
+  .review-controls .rc-label {
+    font-size: 12px; color: var(--text-dim); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    margin-bottom: 8px; display: block;
+  }
+  .verdict-row {
+    display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;
+  }
+  .verdict-btn {
+    flex: 1; min-width: 110px;
+    padding: 8px 10px; border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-dim);
+    font-size: 13px; cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .verdict-btn:hover { color: var(--text); border-color: var(--text-dim); }
+  .verdict-btn.active.cumple   { background: rgba(63,185,80,0.15);  color: var(--good); border-color: var(--good); }
+  .verdict-btn.active.parcial  { background: rgba(210,153,34,0.15); color: var(--warn); border-color: var(--warn); }
+  .verdict-btn.active.nocumple { background: rgba(248,81,73,0.15);  color: var(--bad);  border-color: var(--bad); }
+  .verdict-btn.active.naplica  { background: rgba(154,166,178,0.15); color: var(--text-dim); border-color: var(--text-dim); }
+
+  .review-controls textarea {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px; border-radius: 6px;
+    font-family: inherit; font-size: 13px;
+    resize: vertical; min-height: 50px;
+  }
+  .review-controls textarea:focus {
+    outline: none; border-color: var(--accent);
+  }
+
+  .rule.reviewed { border-left-color: var(--accent); }
+  .reviewed-tag {
+    font-size: 11px; color: var(--accent);
+    background: rgba(79,156,249,0.12);
+    padding: 2px 8px; border-radius: 4px;
+    border: 1px solid rgba(79,156,249,0.35);
+  }
+
+  /* ====== Tabla de archivos .env ====== */
+  .env-state-tag {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+  }
+  .env-state-tag.tracked    { background: rgba(248,81,73,0.18);  color: #ff8a82; }
+  .env-state-tag.history    { background: rgba(248,81,73,0.18);  color: #ff8a82; }
+  .env-state-tag.gitignored { background: rgba(63,185,80,0.18);  color: var(--good); }
+  .env-state-tag.notignored { background: rgba(210,153,34,0.18); color: var(--warn); }
+
   @media (max-width: 800px) {
     .grid { grid-template-columns: 1fr; }
     .domain-row { grid-template-columns: 1fr; }
@@ -208,72 +328,124 @@
   <div class="card">
     <h2>Security Score Global</h2>
     <div class="global-score">
-      <div class="score-num {{if ge .Stats.GlobalScore 80.0}}score-good{{else if ge .Stats.GlobalScore 60.0}}score-warn{{else}}score-bad{{end}}">
-        {{printf "%.1f" .Stats.GlobalScore}}<span class="score-of"> / 100</span>
+      <div id="global-score-num" class="score-num {{if ge .Stats.GlobalScore 80.0}}score-good{{else if ge .Stats.GlobalScore 60.0}}score-warn{{else}}score-bad{{end}}">
+        <span id="global-score-value">{{printf "%.1f" .Stats.GlobalScore}}</span><span class="score-of"> / 100</span>
       </div>
       <div>
-        <div style="color: var(--text-dim); font-size: 13px;">Reglas evaluadas: {{.Stats.TotalRules}}</div>
-        <div style="color: var(--text-dim); font-size: 13px;">Cobertura automática: {{printf "%.1f" .Stats.AutoCoverage}}%</div>
+        <div style="color: var(--text-dim); font-size: 13px;">Reglas evaluadas: <span id="evaluated-count">{{.Stats.EvaluatedRules}}</span> / {{.Stats.TotalRules}}</div>
+        <div style="color: var(--text-dim); font-size: 13px;">Cobertura total: <span id="coverage-value">{{printf "%.1f" .Stats.Coverage}}</span>%</div>
+        <div style="color: var(--text-dim); font-size: 12px;">
+          (auto: <span id="auto-coverage">{{printf "%.1f" .Stats.AutoCoverage}}</span>% ·
+          manual: <span id="manual-coverage">{{printf "%.1f" .Stats.ManualCoverage}}</span>%)
+        </div>
       </div>
     </div>
   </div>
 
   <div class="card">
     <h2>Aptitud para promoción</h2>
-    {{if .Stats.Apto}}
-      <div class="aptitud apto">
+    <div id="aptitud-box" class="aptitud {{if .Stats.Apto}}apto{{else}}no-apto{{end}}">
+      {{if .Stats.Apto}}
         <span class="label">✓ APTO</span>
-        <span class="desc">No hay SVR críticas en estado 'no cumple'.</span>
-      </div>
-    {{else}}
-      <div class="aptitud no-apto">
+        <span class="desc" id="aptitud-desc">No hay SVR críticas en estado 'no cumple'.</span>
+      {{else}}
         <span class="label">✗ NO APTO</span>
-        <span class="desc">Existen {{len .Stats.CriticalFailures}} regla(s) crítica(s) en estado 'no cumple'.</span>
-      </div>
-    {{end}}
+        <span class="desc" id="aptitud-desc">Existen {{len .Stats.CriticalFailures}} regla(s) crítica(s) en estado 'no cumple'.</span>
+      {{end}}
+    </div>
   </div>
 </div>
 
 <div class="card" style="margin-bottom: 32px;">
   <h2>Score por dominio</h2>
   {{range .DomainList}}
-  <div class="domain-row">
+  <div class="domain-row" data-domain="{{.Name}}">
     <div class="domain-name">{{.Name}}</div>
     <div class="bar-wrap">
-      <div class="bar-fill {{.BadgeCls}}" style="width: {{.BarPct}}%"></div>
+      <div class="bar-fill {{.BadgeCls}}" data-bar style="width: {{.BarPct}}%"></div>
     </div>
-    <div class="domain-score {{.BadgeCls}}">{{.ScoreStr}}</div>
+    <div class="domain-score {{.BadgeCls}}" data-domain-score>{{.ScoreStr}}</div>
     <div class="domain-counts">
-      <span class="c-pass">✓ {{.Cumple}}</span>
-      <span class="c-partial">◐ {{.Parcial}}</span>
-      <span class="c-fail">✗ {{.NoCumple}}</span>
-      <span class="c-pend">? {{.NoEval}}</span>
+      <span class="c-pass" data-c-pass>✓ {{.Cumple}}</span>
+      <span class="c-partial" data-c-partial>◐ {{.Parcial}}</span>
+      <span class="c-fail" data-c-fail>✗ {{.NoCumple}}</span>
+      <span class="c-pend" data-c-pend>? {{.NoEval}}</span>
     </div>
   </div>
   {{end}}
 </div>
 
+{{if or .ManualView .NoEvidenceView}}
+<div class="review-center">
+  <h2>Centro de revisión manual</h2>
+  <div class="subtitle">
+    {{len .ManualView}} regla(s) requieren revisión humana y {{len .NoEvidenceView}} no pudieron evaluarse automáticamente por falta de datos. Marque cada una directamente desde su tarjeta y la cobertura, el score por dominio y el score global se actualizarán al instante. Cuando termine, exporte un archivo de revisión para que las próximas corridas no pierdan estos veredictos.
+  </div>
+  <div class="progress-row">
+    <div class="progress-text">
+      <span id="manual-progress-current">0</span><span class="muted"> / </span><span id="manual-progress-total">{{.ManualSlotsTotal}}</span>
+      <span class="muted"> reglas pendientes evaluadas manualmente</span>
+    </div>
+    <div class="progress-bar">
+      <div id="manual-progress-fill" class="progress-fill" style="width:0%"></div>
+    </div>
+  </div>
+  <div class="review-actions">
+    <button class="btn primary" id="btn-export-review">⬇ Exportar revisión (YAML)</button>
+    <label class="btn" for="file-import-review">⬆ Importar revisión</label>
+    <input type="file" id="file-import-review" accept=".yaml,.yml,.json" style="display:none">
+    <button class="btn ghost" id="btn-reset-review">Limpiar veredictos</button>
+  </div>
+  <div style="margin-top: 10px; font-size: 11px; color: var(--text-dim);">
+    El archivo exportado puede pasarse a la CLI con <code>staging-shield scan --review revision.yaml</code> para conservar los veredictos en la próxima corrida.
+  </div>
+</div>
+{{end}}
+
+{{define "ruleCard"}}
+<div class="rule {{.SevClass}}{{if .Critical}} critical{{end}}"
+     data-rule-id="{{.ID}}"
+     data-domain="{{.Domain}}"
+     data-severity="{{.SevWeight}}"
+     data-critical="{{if .Critical}}true{{else}}false{{end}}"
+     data-initial-status="{{.StatusKey}}"
+     data-can-review="{{if .CanReview}}true{{else}}false{{end}}">
+  <div class="rule-head">
+    <span class="rule-id">{{.ID}}</span>
+    <span class="badge {{.SevClass}}">{{.Severity}}</span>
+    <span class="badge {{.StatusCls}}" data-status-badge>{{.Status}}</span>
+    {{if .Critical}}<span class="badge critical">crítica</span>{{end}}
+    <span class="reviewed-tag" data-reviewed-tag style="display:none">revisado manualmente</span>
+    <span class="rule-criterion">{{.Criterion}}</span>
+  </div>
+  <div class="rule-meta">
+    <span>Dominio: {{.Domain}}</span>
+    <span>Referencia: <code>{{.Reference}}</code></span>
+    <span>Modo: {{.Mode}}</span>
+  </div>
+  {{if .Evidence}}<div class="evidence"><span class="label">Evidencia:</span>{{.Evidence}}</div>{{end}}
+  {{if .Notes}}<div class="notes" data-notes>↳ {{.Notes}}</div>{{end}}
+
+  {{if .CanReview}}
+  <div class="review-controls" data-review-controls>
+    <span class="rc-label">Veredicto del evaluador</span>
+    <div class="verdict-row" role="radiogroup" aria-label="Veredicto manual para {{.ID}}">
+      <button type="button" class="verdict-btn" data-verdict="cumple"   data-rule-target="{{.ID}}">✓ Cumple</button>
+      <button type="button" class="verdict-btn" data-verdict="parcial"  data-rule-target="{{.ID}}">◐ Cumple parcialmente</button>
+      <button type="button" class="verdict-btn" data-verdict="nocumple" data-rule-target="{{.ID}}">✗ No cumple</button>
+      <button type="button" class="verdict-btn" data-verdict="naplica"  data-rule-target="{{.ID}}">○ No aplica</button>
+    </div>
+    <textarea data-evidence-input
+              placeholder="Evidencia / justificación del veredicto (opcional pero recomendado: documento de referencia, número de ticket, fecha de validación, persona consultada)"></textarea>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
 {{if .CriticalView}}
 <section>
   <h2>SVR críticas que bloquean la promoción <span class="count">({{len .CriticalView}})</span></h2>
-  {{range .CriticalView}}
-  <div class="rule critical">
-    <div class="rule-head">
-      <span class="rule-id">{{.ID}}</span>
-      <span class="badge critical">crítica</span>
-      <span class="badge {{.SevClass}}">{{.Severity}}</span>
-      <span class="badge {{.StatusCls}}">{{.Status}}</span>
-      <span class="rule-criterion">{{.Criterion}}</span>
-    </div>
-    <div class="rule-meta">
-      <span>Dominio: {{.Domain}}</span>
-      <span>Referencia: <code>{{.Reference}}</code></span>
-      <span>Modo: {{.Mode}}</span>
-    </div>
-    {{if .Evidence}}<div class="evidence"><span class="label">Evidencia:</span>{{.Evidence}}</div>{{end}}
-    {{if .Notes}}<div class="notes">↳ {{.Notes}}</div>{{end}}
-  </div>
-  {{end}}
+  {{range .CriticalView}}{{template "ruleCard" .}}{{end}}
 </section>
 {{end}}
 
@@ -289,24 +461,7 @@
 {{if .FailedView}}
 <section>
   <h2>Hallazgos: SVR en estado "no cumple" <span class="count">({{len .FailedView}})</span></h2>
-  {{range .FailedView}}
-  <div class="rule {{.SevClass}}{{if .Critical}} critical{{end}}">
-    <div class="rule-head">
-      <span class="rule-id">{{.ID}}</span>
-      <span class="badge {{.SevClass}}">{{.Severity}}</span>
-      <span class="badge {{.StatusCls}}">{{.Status}}</span>
-      {{if .Critical}}<span class="badge critical">crítica</span>{{end}}
-      <span class="rule-criterion">{{.Criterion}}</span>
-    </div>
-    <div class="rule-meta">
-      <span>Dominio: {{.Domain}}</span>
-      <span>Referencia: <code>{{.Reference}}</code></span>
-      <span>Modo: {{.Mode}}</span>
-    </div>
-    {{if .Evidence}}<div class="evidence"><span class="label">Evidencia:</span>{{.Evidence}}</div>{{end}}
-    {{if .Notes}}<div class="notes">↳ {{.Notes}}</div>{{end}}
-  </div>
-  {{end}}
+  {{range .FailedView}}{{template "ruleCard" .}}{{end}}
 </section>
 {{end}}
 
@@ -314,24 +469,9 @@
 <section>
   <h2>Reglas con evidencia incompleta <span class="count">({{len .NoEvidenceView}})</span></h2>
   <p style="color: var(--text-dim); margin-bottom: 12px;">
-    Estas reglas no se pudieron evaluar automáticamente porque la configuración de entrada del programa cliente no incluye los datos necesarios.
-    No se computan en el score global y deben completarse para una evaluación más precisa.
+    Estas reglas no se pudieron evaluar automáticamente porque la configuración del programa cliente no incluye los datos necesarios. Use los controles de cada tarjeta para registrar el veredicto si dispone de la evidencia por otra vía: al hacerlo entrarán al cálculo del score y subirán la cobertura.
   </p>
-  {{range .NoEvidenceView}}
-  <div class="rule low">
-    <div class="rule-head">
-      <span class="rule-id">{{.ID}}</span>
-      <span class="badge {{.SevClass}}">{{.Severity}}</span>
-      <span class="badge {{.StatusCls}}">{{.Status}}</span>
-      <span class="rule-criterion">{{.Criterion}}</span>
-    </div>
-    <div class="rule-meta">
-      <span>Dominio: {{.Domain}}</span>
-      <span>Referencia: <code>{{.Reference}}</code></span>
-    </div>
-    {{if .Notes}}<div class="notes">↳ {{.Notes}}</div>{{end}}
-  </div>
-  {{end}}
+  {{range .NoEvidenceView}}{{template "ruleCard" .}}{{end}}
 </section>
 {{end}}
 
@@ -339,23 +479,9 @@
 <section>
   <h2>Reglas que requieren revisión manual <span class="count">({{len .ManualView}})</span></h2>
   <p style="color: var(--text-dim); margin-bottom: 12px;">
-    Estas reglas requieren revisión documental, validación de procesos organizacionales o acceso administrativo que el programa cliente no tiene.
-    El evaluador debe completar su valoración manualmente.
+    Requieren revisión documental, validación organizacional o acceso administrativo que el programa cliente no tiene. Marque cada una con su veredicto y la cobertura del modelo subirá en consecuencia.
   </p>
-  {{range .ManualView}}
-  <div class="rule low">
-    <div class="rule-head">
-      <span class="rule-id">{{.ID}}</span>
-      <span class="badge {{.SevClass}}">{{.Severity}}</span>
-      <span class="badge {{.StatusCls}}">manual</span>
-      <span class="rule-criterion">{{.Criterion}}</span>
-    </div>
-    <div class="rule-meta">
-      <span>Dominio: {{.Domain}}</span>
-      <span>Referencia: <code>{{.Reference}}</code></span>
-    </div>
-  </div>
-  {{end}}
+  {{range .ManualView}}{{template "ruleCard" .}}{{end}}
 </section>
 {{end}}
 
@@ -363,21 +489,7 @@
 <section>
   <details>
     <summary>SVR cumplidas (total o parcialmente) <span class="count">({{len .PassedView}})</span></summary>
-    {{range .PassedView}}
-    <div class="rule low">
-      <div class="rule-head">
-        <span class="rule-id">{{.ID}}</span>
-        <span class="badge {{.SevClass}}">{{.Severity}}</span>
-        <span class="badge {{.StatusCls}}">{{.Status}}</span>
-        <span class="rule-criterion">{{.Criterion}}</span>
-      </div>
-      <div class="rule-meta">
-        <span>Dominio: {{.Domain}}</span>
-        <span>Referencia: <code>{{.Reference}}</code></span>
-      </div>
-      {{if .Evidence}}<div class="evidence"><span class="label">Evidencia:</span>{{.Evidence}}</div>{{end}}
-    </div>
-    {{end}}
+    {{range .PassedView}}{{template "ruleCard" .}}{{end}}
   </details>
 </section>
 {{end}}
@@ -474,16 +586,54 @@
 
   {{if .Discovery.Secrets}}
   <details open>
-    <summary>Secretos detectados en repositorio ({{.SecretsCount}}, {{.HighSecrets}} de severidad alta)</summary>
+    <summary>Secretos detectados en repositorio ({{.SecretsCount}}, {{.HighSecrets}} de severidad alta · {{.TrackedSecrets}} en archivos públicos)</summary>
+    <p style="color: var(--text-dim); margin: 8px 0 8px; font-size: 12px;">
+      La columna "Exposición" indica si el archivo está actualmente trackeado por git, presente en su historial, o solo es local del evaluador. Solo los hallazgos en archivos trackeados o en historial penalizan SVR-IAM-04.
+    </p>
     <table class="discovery-table">
-      <tr><th>Archivo</th><th>Línea</th><th>Patrón</th><th>Severidad</th><th>Match (redactado)</th></tr>
+      <tr><th>Archivo</th><th>Línea</th><th>Patrón</th><th>Severidad</th><th>Exposición</th><th>Match (redactado)</th></tr>
       {{range .Discovery.Secrets}}
       <tr>
         <td><code>{{.File}}</code></td>
         <td>{{.Line}}</td>
         <td>{{.Pattern}}</td>
         <td><span class="badge {{if eq .Severity "alto"}}high{{else}}med{{end}}">{{.Severity}}</span></td>
+        <td>
+          {{if .Tracked}}<span class="env-state-tag tracked">trackeado</span>
+          {{else if .InHistory}}<span class="env-state-tag history">en historial</span>
+          {{else}}<span class="env-state-tag gitignored">solo local</span>{{end}}
+        </td>
         <td><code>{{.Match}}</code></td>
+      </tr>
+      {{end}}
+    </table>
+  </details>
+  {{end}}
+
+  {{if .Discovery.EnvFiles}}
+  <details open>
+    <summary>Archivos .env analizados ({{len .Discovery.EnvFiles}}) — análisis con conciencia de git</summary>
+    <p style="color: var(--text-dim); margin: 8px 0 12px; font-size: 12px;">
+      Un archivo <code>.env</code> en disco no es necesariamente una exposición de secretos.
+      El validador SVR-IAM-07 distingue entre archivos efectivamente filtrados (trackeados o en historial git) y archivos solo locales (correctamente excluidos del control de versiones).
+      {{if not .Discovery.Git.Available}}
+        <strong>El repositorio no es git</strong>: {{.Discovery.Git.Error}}. La evaluación cae a heurística por presencia en disco.
+      {{end}}
+    </p>
+    <table class="discovery-table">
+      <tr><th>Archivo</th><th>Estado</th><th>¿Contiene secretos detectables?</th></tr>
+      {{range .Discovery.EnvFiles}}
+      <tr>
+        <td><code>{{.Path}}</code></td>
+        <td>
+          {{if .Tracked}}<span class="env-state-tag tracked">trackeado</span>{{end}}
+          {{if .InHistory}}<span class="env-state-tag history">en historial</span>{{end}}
+          {{if .Gitignored}}<span class="env-state-tag gitignored">gitignored</span>{{end}}
+          {{if and (not .Tracked) (not .InHistory) (not .Gitignored)}}
+            <span class="env-state-tag notignored">solo local, no en .gitignore</span>
+          {{end}}
+        </td>
+        <td>{{if .HasSecrets}}sí (ver tabla anterior){{else}}no detectados por patrón{{end}}</td>
       </tr>
       {{end}}
     </table>
@@ -495,6 +645,531 @@
   Generado por Staging Shield · {{.GeneratedAt}} · Modelo de Evaluación de Seguridad para Entornos de Preproducción
 </div>
 
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
 </div>
+<script>
+(function() {
+  "use strict";
+
+  // ====================================================================
+  // Datos canónicos del entorno (para exportar el archivo de revisión)
+  // ====================================================================
+  const ENV_META = {
+    name:      "{{.Env.EnvironmentName}}",
+    type:      "{{.Env.EnvironmentType}}",
+    stack:     "{{.Env.StackType}}",
+    target:    "{{.Env.Target}}",
+    timestamp: "{{.GeneratedAt}}"
+  };
+  const DOMAIN_WEIGHTS = {
+    {{range .DomainList}}"{{.Name}}": 1.0,
+    {{end}}
+  };
+
+  // ====================================================================
+  // Recálculo del Security Score, cobertura y aptitud en tiempo real.
+  //
+  // El cálculo replica la fórmula del modelo:
+  //
+  //   Score = 100 * Σ(c · w · d) / Σ(w · d)
+  //
+  // donde c ∈ {0, 0.5, 1.0}, w = severidad y d = peso del dominio.
+  // El JS solo recorre el DOM una vez y agrega por dominio. Es O(n) sobre
+  // las 36 SVR; para este tamaño no necesitamos índices ni cachés.
+  // ====================================================================
+  const verdicts = {}; // ruleId -> { status, evidence }
+
+  function getRuleEffectiveStatus(ruleEl) {
+    const id = ruleEl.dataset.ruleId;
+    if (verdicts[id]) return verdicts[id].status; // veredicto humano
+    return ruleEl.dataset.initialStatus;          // estado del motor
+  }
+
+  function statusToNumeric(s) {
+    switch (s) {
+      case "cumple":   return 1.0;
+      case "parcial":  return 0.5;
+      case "nocumple": return 0.0;
+      default:         return null; // pendiente / falta-evidencia / manual / naplica → no entra al cálculo
+    }
+  }
+
+  function scoreClass(s) {
+    if (s >= 80) return "score-good";
+    if (s >= 60) return "score-warn";
+    return "score-bad";
+  }
+
+  // Algunos rule cards aparecen duplicados (CriticalView reaparece en
+  // FailedView, una regla cumplida puede aparecer en PassedView, etc.).
+  // Para no contar dos veces deduplicamos por ID antes de agregar.
+  function uniqueRules() {
+    const seen = new Set();
+    const out = [];
+    document.querySelectorAll('[data-rule-id]').forEach(el => {
+      const id = el.dataset.ruleId;
+      if (seen.has(id)) return;
+      seen.add(id);
+      out.push(el);
+    });
+    return out;
+  }
+
+  function recalc() {
+    const domainAcc = {}; // domain -> {num, den, cumple, parcial, nocumple, noeval, evaluated}
+    let globalNum = 0, globalDen = 0;
+    let totalRules = 0, autoEval = 0, manualEval = 0;
+    let apto = true;
+    let criticalFails = 0;
+
+    uniqueRules().forEach(el => {
+      const dom    = el.dataset.domain;
+      const sev    = parseInt(el.dataset.severity, 10) || 1;
+      const crit   = el.dataset.critical === "true";
+      const status = getRuleEffectiveStatus(el);
+      const fromHuman = !!verdicts[el.dataset.ruleId];
+
+      if (!domainAcc[dom]) {
+        domainAcc[dom] = {num:0, den:0, cumple:0, parcial:0, nocumple:0, noeval:0, total:0, evaluated:0};
+      }
+      domainAcc[dom].total++;
+      totalRules++;
+
+      const c = statusToNumeric(status);
+      if (c === null) {
+        domainAcc[dom].noeval++;
+      } else {
+        const dw = DOMAIN_WEIGHTS[dom] || 1.0;
+        domainAcc[dom].num += c * sev;
+        domainAcc[dom].den += sev;
+        globalNum += c * sev * dw;
+        globalDen += sev * dw;
+        domainAcc[dom].evaluated++;
+
+        if (status === "cumple")        domainAcc[dom].cumple++;
+        else if (status === "parcial")  domainAcc[dom].parcial++;
+        else if (status === "nocumple") {
+          domainAcc[dom].nocumple++;
+          if (crit) { apto = false; criticalFails++; }
+        }
+
+        if (fromHuman) manualEval++;
+        else            autoEval++;
+      }
+    });
+
+    // === Actualizar score global y cobertura ===
+    const globalScore = globalDen > 0 ? (100 * globalNum / globalDen) : 0;
+    const coverage    = totalRules > 0 ? (100 * (autoEval + manualEval) / totalRules) : 0;
+    const autoCovPct  = totalRules > 0 ? (100 * autoEval   / totalRules) : 0;
+    const manCovPct   = totalRules > 0 ? (100 * manualEval / totalRules) : 0;
+
+    setText("global-score-value", globalScore.toFixed(1));
+    setClass("global-score-num", "score-num " + scoreClass(globalScore));
+    setText("coverage-value",   coverage.toFixed(1));
+    setText("auto-coverage",    autoCovPct.toFixed(1));
+    setText("manual-coverage",  manCovPct.toFixed(1));
+    setText("evaluated-count",  String(autoEval + manualEval));
+
+    // === Actualizar score por dominio ===
+    document.querySelectorAll('.domain-row').forEach(row => {
+      const d = row.dataset.domain;
+      const acc = domainAcc[d];
+      if (!acc) return;
+      const ds = acc.den > 0 ? (100 * acc.num / acc.den) : 0;
+      const cls = scoreClass(ds);
+      const sEl = row.querySelector('[data-domain-score]');
+      const bEl = row.querySelector('[data-bar]');
+      if (sEl) {
+        sEl.textContent = ds.toFixed(2);
+        sEl.className = "domain-score " + cls;
+      }
+      if (bEl) {
+        bEl.style.width = Math.max(0, Math.min(100, ds)) + "%";
+        bEl.className = "bar-fill " + cls;
+      }
+      const cp = row.querySelector('[data-c-pass]');
+      const cP = row.querySelector('[data-c-partial]');
+      const cf = row.querySelector('[data-c-fail]');
+      const cn = row.querySelector('[data-c-pend]');
+      if (cp) cp.textContent = "✓ " + acc.cumple;
+      if (cP) cP.textContent = "◐ " + acc.parcial;
+      if (cf) cf.textContent = "✗ " + acc.nocumple;
+      if (cn) cn.textContent = "? " + acc.noeval;
+    });
+
+    // === Actualizar aptitud ===
+    const aptBox  = document.getElementById("aptitud-box");
+    const aptDesc = document.getElementById("aptitud-desc");
+    if (aptBox && aptDesc) {
+      if (apto) {
+        aptBox.className = "aptitud apto";
+        aptBox.innerHTML = '<span class="label">✓ APTO</span><span class="desc" id="aptitud-desc">No hay SVR críticas en estado \'no cumple\'.</span>';
+      } else {
+        aptBox.className = "aptitud no-apto";
+        aptBox.innerHTML = '<span class="label">✗ NO APTO</span><span class="desc" id="aptitud-desc">Existen ' + criticalFails + ' regla(s) crítica(s) en estado \'no cumple\'.</span>';
+      }
+    }
+
+    // === Actualizar progreso del centro de revisión ===
+    const totalManualSlots = document.querySelectorAll('[data-can-review="true"]').length / countDuplicates();
+    const reviewedCount = Object.keys(verdicts).length;
+    setText("manual-progress-current", String(reviewedCount));
+    const totalEl = document.getElementById("manual-progress-total");
+    const total = totalEl ? parseInt(totalEl.textContent, 10) || 1 : 1;
+    const pct = Math.min(100, 100 * reviewedCount / total);
+    const fill = document.getElementById("manual-progress-fill");
+    if (fill) fill.style.width = pct + "%";
+  }
+
+  // Las rule cards pueden aparecer en varias secciones; este factor ajusta
+  // el conteo de slots manuales para evitar contar duplicados.
+  function countDuplicates() {
+    const ids = new Set();
+    let dupes = 0;
+    document.querySelectorAll('[data-can-review="true"]').forEach(el => {
+      const id = el.dataset.ruleId;
+      if (ids.has(id)) dupes++;
+      else ids.add(id);
+    });
+    return Math.max(1, (dupes + ids.size) / Math.max(1, ids.size));
+  }
+
+  // ====================================================================
+  // Manejo de los botones de veredicto
+  // ====================================================================
+  function applyVerdict(ruleId, verdict) {
+    if (verdict === "naplica") {
+      // "no aplica" no entra al cálculo (igual que falta-evidencia) pero
+      // sí queda registrado para exportarlo en el archivo de revisión y
+      // ser visible en el reporte.
+      verdicts[ruleId] = { status: null, raw: "naplica", evidence: getEvidence(ruleId) };
+    } else if (verdict === null) {
+      delete verdicts[ruleId];
+    } else {
+      verdicts[ruleId] = { status: verdict, raw: verdict, evidence: getEvidence(ruleId) };
+    }
+    paintRule(ruleId);
+    recalc();
+  }
+
+  function getEvidence(ruleId) {
+    // Toma la evidencia del primer textarea encontrado para esa regla
+    const el = document.querySelector('[data-rule-id="' + cssEscape(ruleId) + '"] [data-evidence-input]');
+    return el ? el.value : "";
+  }
+
+  function paintRule(ruleId) {
+    document.querySelectorAll('[data-rule-id="' + cssEscape(ruleId) + '"]').forEach(card => {
+      const v = verdicts[ruleId];
+      const badge = card.querySelector('[data-status-badge]');
+      const tag   = card.querySelector('[data-reviewed-tag]');
+      // Reset estado de botones
+      card.querySelectorAll('.verdict-btn').forEach(b => b.classList.remove('active','cumple','parcial','nocumple','naplica'));
+      if (!v) {
+        // Volver al estado inicial
+        if (badge) {
+          badge.textContent = card.dataset.initialStatusLabel || badge.textContent;
+        }
+        if (tag) tag.style.display = "none";
+        card.classList.remove("reviewed");
+        return;
+      }
+      const raw = v.raw;
+      const target = card.querySelector('.verdict-btn[data-verdict="' + raw + '"]');
+      if (target) target.classList.add('active', raw);
+      if (badge) {
+        const labels = {cumple:"Cumple", parcial:"Cumple parcialmente", nocumple:"No cumple", naplica:"No aplica"};
+        badge.textContent = labels[raw] || badge.textContent;
+        const clsMap = {cumple:"badge pass", parcial:"badge partial", nocumple:"badge fail", naplica:"badge manual"};
+        badge.className = clsMap[raw] || badge.className;
+      }
+      if (tag) tag.style.display = "";
+      card.classList.add("reviewed");
+    });
+  }
+
+  // Función polyfill ligera para CSS.escape (para IDs como "SVR-NET-01"
+  // que no necesitan escape, pero es buena práctica defensiva).
+  function cssEscape(s) {
+    if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  }
+
+  // ====================================================================
+  // Exportación / Importación del archivo de revisión (YAML)
+  // ====================================================================
+  function exportReview() {
+    const lines = [];
+    lines.push('# Archivo de revisión manual generado por Staging Shield');
+    lines.push('# Entorno: ' + (ENV_META.name || '?') + ' (' + (ENV_META.type || '?') + ')');
+    lines.push('# Reusar con: staging-shield scan --review este_archivo.yaml');
+    lines.push('reviewer: ""');
+    lines.push('timestamp: "' + new Date().toISOString() + '"');
+    lines.push('verdicts:');
+    const ids = Object.keys(verdicts).sort();
+    if (ids.length === 0) {
+      lines.push('  # (sin veredictos registrados)');
+    }
+    for (const id of ids) {
+      const v = verdicts[id];
+      const statusStr = v.raw; // "cumple" | "parcial" -> "cumple_parcial" | "nocumple" -> "no_cumple"
+      const yamlStatus = (statusStr === "parcial")  ? "cumple_parcial"
+                        : (statusStr === "nocumple") ? "no_cumple"
+                        : (statusStr === "naplica")  ? "no_aplica"
+                        : statusStr;
+      lines.push('  ' + id + ':');
+      lines.push('    status: ' + yamlStatus);
+      const ev = (v.evidence || "").replace(/\r?\n/g, ' ').replace(/"/g, '\\"');
+      if (ev) lines.push('    evidence: "' + ev + '"');
+    }
+    const yaml = lines.join('\n') + '\n';
+    download("staging-shield-review-" + slug(ENV_META.name) + ".yaml", yaml, "text/yaml");
+    toast("Revisión exportada (" + ids.length + " veredictos)", "success");
+  }
+
+  function importReview(file) {
+    const reader = new FileReader();
+    reader.onload = function() {
+      try {
+        const txt = String(reader.result || "");
+        const parsed = parseSimpleYAML(txt);
+        if (!parsed.verdicts || Object.keys(parsed.verdicts).length === 0) {
+          throw new Error("el archivo no contiene veredictos. Revise que tenga la sección 'verdicts:' al principio.");
+        }
+        let n = 0, skipped = 0, unknown = [];
+        const knownIds = new Set();
+        document.querySelectorAll('[data-rule-id]').forEach(el => knownIds.add(el.dataset.ruleId));
+
+        for (const id in parsed.verdicts) {
+          const v = parsed.verdicts[id];
+          let raw = (v.status || "").toLowerCase();
+          if (raw === "cumple_parcial" || raw === "parcial") raw = "parcial";
+          else if (raw === "no_cumple" || raw === "nocumple") raw = "nocumple";
+          else if (raw === "no_aplica" || raw === "naplica") raw = "naplica";
+          if (!["cumple","parcial","nocumple","naplica"].includes(raw)) {
+            skipped++; continue;
+          }
+          if (!knownIds.has(id)) {
+            unknown.push(id); continue;
+          }
+          if (raw === "naplica") {
+            verdicts[id] = { status: null, raw: "naplica", evidence: v.evidence || "" };
+          } else {
+            verdicts[id] = { status: raw, raw: raw, evidence: v.evidence || "" };
+          }
+          document.querySelectorAll('[data-rule-id="' + cssEscape(id) + '"] [data-evidence-input]').forEach(t => {
+            t.value = v.evidence || "";
+          });
+          paintRule(id);
+          n++;
+        }
+        recalc();
+
+        // Mensaje claro al usuario sobre el resultado del import
+        let msg = "Importados " + n + " veredictos";
+        const tail = [];
+        if (skipped > 0)        tail.push(skipped + " ignorados por status inválido");
+        if (unknown.length > 0) tail.push(unknown.length + " IDs desconocidos: " + unknown.slice(0,3).join(", ") + (unknown.length > 3 ? "..." : ""));
+        if (parsed.__issues && parsed.__issues.length > 0) tail.push(parsed.__issues.length + " problemas de formato");
+        if (tail.length > 0) msg += " (" + tail.join("; ") + ")";
+        toast(msg, n > 0 ? "success" : "error");
+        if (n === 0) console.warn("Import sin efecto. Diagnóstico:", parsed.__issues);
+      } catch (e) {
+        toast("Error al importar: " + e.message, "error");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function resetReview() {
+    if (!confirm("¿Limpiar todos los veredictos manuales? Esta acción no se puede deshacer en esta vista (se conservan en el archivo exportado).")) return;
+    const ids = Object.keys(verdicts);
+    for (const id of ids) {
+      delete verdicts[id];
+      paintRule(id);
+    }
+    document.querySelectorAll('[data-evidence-input]').forEach(t => t.value = "");
+    recalc();
+    toast("Veredictos limpiados", "success");
+  }
+
+  // Parser tolerante para el subset de YAML que produce el centro de
+  // revisión. Acepta indentación arbitraria con espacios o tabs siempre y
+  // cuando sea consistente dentro de cada bloque, y soporta los formatos
+  // tanto exportado por nosotros como editado a mano. Devuelve además
+  // diagnóstico: número de líneas ignoradas y problemas encontrados, para
+  // que el usuario sepa por qué un import puede haber resultado en menos
+  // veredictos de los esperados.
+  function parseSimpleYAML(txt) {
+    const out = { verdicts: {} };
+    const issues = [];
+    const lines = txt.split(/\r?\n/);
+    let inVerdicts = false;
+    let baseIndent = -1;     // indent de los IDs dentro de 'verdicts:'
+    let fieldIndent = -1;    // indent de los campos dentro de cada ID
+    let currentId = null;
+
+    function indentOf(s) {
+      let n = 0;
+      for (const ch of s) {
+        if (ch === ' ') n += 1;
+        else if (ch === '\t') n += 2; // tratar tab como 2 espacios
+        else break;
+      }
+      return n;
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      if (/^\s*#/.test(raw) || /^\s*$/.test(raw)) continue;
+      const indent = indentOf(raw);
+      const trimmed = raw.replace(/^\s+/, '').replace(/\s+$/, '');
+
+      // Top-level key (incluyendo 'verdicts:')
+      if (indent === 0) {
+        if (/^verdicts\s*:\s*$/.test(trimmed)) {
+          inVerdicts = true;
+          baseIndent = -1;
+          fieldIndent = -1;
+          currentId = null;
+          continue;
+        }
+        // Otros campos top-level: reviewer, timestamp, etc.
+        const m = trimmed.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*"?(.*?)"?\s*$/);
+        if (m) out[m[1]] = m[2];
+        inVerdicts = false;
+        continue;
+      }
+
+      if (!inVerdicts) continue;
+
+      // Detectar el indent base de los IDs la primera vez que aparece uno
+      if (baseIndent === -1) baseIndent = indent;
+
+      // Línea de ID nuevo: "  SVR-XXX-NN:"
+      if (indent === baseIndent && /^[A-Za-z][A-Za-z0-9_\-]*\s*:\s*$/.test(trimmed)) {
+        currentId = trimmed.replace(/\s*:\s*$/, '');
+        out.verdicts[currentId] = {};
+        fieldIndent = -1;
+        continue;
+      }
+
+      // Línea de campo: "    status: cumple" / "    evidence: ..."
+      if (indent > baseIndent && currentId) {
+        if (fieldIndent === -1) fieldIndent = indent;
+        if (indent === fieldIndent) {
+          const m = trimmed.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*?)\s*$/);
+          if (m) {
+            let val = m[2];
+            // Quitar comillas envolventes (simples o dobles), si están balanceadas
+            if ((val.startsWith('"') && val.endsWith('"') && val.length >= 2) ||
+                (val.startsWith("'") && val.endsWith("'") && val.length >= 2)) {
+              val = val.slice(1, -1);
+            }
+            // Des-escape básico para evidence con \" y \n
+            val = val.replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\\\/g, '\\');
+            out.verdicts[currentId][m[1]] = val;
+          } else {
+            issues.push("línea " + (i+1) + ": no se pudo parsear el campo");
+          }
+        } else {
+          issues.push("línea " + (i+1) + ": indentación inconsistente, ignorada");
+        }
+        continue;
+      }
+
+      // Algo no encajó
+      issues.push("línea " + (i+1) + ": fuera de estructura, ignorada");
+    }
+    out.__issues = issues;
+    return out;
+  }
+
+  // ====================================================================
+  // Helpers DOM
+  // ====================================================================
+  function setText(id, txt) { const el = document.getElementById(id); if (el) el.textContent = txt; }
+  function setClass(id, cls) { const el = document.getElementById(id); if (el) el.className = cls; }
+
+  function slug(s) {
+    return String(s||"env").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+
+  function download(filename, content, mime) {
+    const blob = new Blob([content], { type: mime || "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  let toastTimeout = null;
+  function toast(msg, kind) {
+    const t = document.getElementById("toast");
+    if (!t) return;
+    t.textContent = msg;
+    t.className = "toast show " + (kind || "");
+    if (toastTimeout) clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => { t.className = "toast"; }, 3000);
+  }
+
+  // ====================================================================
+  // Wiring
+  // ====================================================================
+  document.addEventListener("click", function(e) {
+    const btn = e.target.closest('.verdict-btn');
+    if (!btn) return;
+    const id = btn.dataset.ruleTarget;
+    const v  = btn.dataset.verdict;
+    // Toggle: clic sobre un botón ya activo lo desactiva
+    if (verdicts[id] && verdicts[id].raw === v) {
+      applyVerdict(id, null);
+    } else {
+      applyVerdict(id, v);
+    }
+  });
+
+  // Sincronizar evidencia entre cards duplicadas (mismo ID en distintas
+  // secciones) y persistirla en el objeto verdicts.
+  document.addEventListener("input", function(e) {
+    const t = e.target;
+    if (!t.matches || !t.matches('[data-evidence-input]')) return;
+    const card = t.closest('[data-rule-id]');
+    if (!card) return;
+    const id = card.dataset.ruleId;
+    document.querySelectorAll('[data-rule-id="' + cssEscape(id) + '"] [data-evidence-input]').forEach(other => {
+      if (other !== t) other.value = t.value;
+    });
+    if (verdicts[id]) verdicts[id].evidence = t.value;
+  });
+
+  const btnExp = document.getElementById("btn-export-review");
+  if (btnExp) btnExp.addEventListener("click", exportReview);
+  const btnReset = document.getElementById("btn-reset-review");
+  if (btnReset) btnReset.addEventListener("click", resetReview);
+  const fileImp = document.getElementById("file-import-review");
+  if (fileImp) fileImp.addEventListener("change", function(e) {
+    const f = e.target.files && e.target.files[0];
+    if (f) importReview(f);
+    e.target.value = ""; // permitir reimportar el mismo archivo
+  });
+
+  // Capturar la etiqueta inicial de cada badge para poder restaurarla al
+  // limpiar un veredicto.
+  document.querySelectorAll('[data-rule-id]').forEach(card => {
+    const badge = card.querySelector('[data-status-badge]');
+    if (badge) card.dataset.initialStatusLabel = badge.textContent;
+  });
+
+  // Cálculo inicial (refleja estado actual sin veredictos manuales)
+  recalc();
+})();
+</script>
 </body>
 </html>

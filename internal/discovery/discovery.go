@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -40,7 +41,11 @@ func Run(ec *ctx.EvalContext, verbose bool) {
 	checkAdminExposure(ec, log)
 	checkLegacyServices(ec, log)
 	checkProductionReachability(ec, log)
+	// Importante: gatherGitContext debe correr antes que scanSecrets para
+	// que cada hallazgo se pueda etiquetar con tracked / in-history.
+	gatherGitContext(ec, log)
 	scanSecrets(ec, log)
+	scanEnvFiles(ec, log)
 
 	log("Descubrimiento completado")
 }
@@ -153,10 +158,10 @@ func scanPorts(ec *ctx.EvalContext, log func(string, ...interface{})) {
 
 	const workers = 50
 	var (
-		mu    sync.Mutex
-		open  []ctx.PortFinding
-		sem   = make(chan struct{}, workers)
-		wg    sync.WaitGroup
+		mu   sync.Mutex
+		open []ctx.PortFinding
+		sem  = make(chan struct{}, workers)
+		wg   sync.WaitGroup
 	)
 	timeout := 1500 * time.Millisecond
 
@@ -458,6 +463,18 @@ func scanSecrets(ec *ctx.EvalContext, log func(string, ...interface{})) {
 	const maxFiles = 10000
 	count := 0
 
+	// Conjuntos de tracking para etiquetar cada hallazgo según su estado
+	// frente a git. Si git no está disponible, ambos quedan vacíos y los
+	// validadores caen al comportamiento previo.
+	tracked := make(map[string]bool, len(ec.Discovery.Git.TrackedFiles))
+	for _, p := range ec.Discovery.Git.TrackedFiles {
+		tracked[normalizeRel(p)] = true
+	}
+	inHistory := make(map[string]bool, len(ec.Discovery.Git.HistoryFiles))
+	for _, p := range ec.Discovery.Git.HistoryFiles {
+		inHistory[normalizeRel(p)] = true
+	}
+
 	_ = filepath.WalkDir(ec.RepoPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -487,6 +504,9 @@ func scanSecrets(ec *ctx.EvalContext, log func(string, ...interface{})) {
 		if err != nil {
 			return nil
 		}
+		rel, _ := filepath.Rel(ec.RepoPath, path)
+		relNorm := normalizeRel(rel)
+
 		// Procesar línea por línea para reportar línea exacta
 		lines := strings.Split(string(data), "\n")
 		for i, line := range lines {
@@ -494,13 +514,14 @@ func scanSecrets(ec *ctx.EvalContext, log func(string, ...interface{})) {
 				if loc := pat.Re.FindStringIndex(line); loc != nil {
 					match := line[loc[0]:loc[1]]
 					match = redactSecret(match)
-					rel, _ := filepath.Rel(ec.RepoPath, path)
 					ec.Discovery.SecretFindings = append(ec.Discovery.SecretFindings, ctx.SecretFinding{
-						File:     rel,
-						Line:     i + 1,
-						Pattern:  pat.Name,
-						Match:    match,
-						Severity: pat.Severity,
+						File:      rel,
+						Line:      i + 1,
+						Pattern:   pat.Name,
+						Match:     match,
+						Severity:  pat.Severity,
+						Tracked:   tracked[relNorm],
+						InHistory: inHistory[relNorm],
 					})
 				}
 			}
@@ -511,6 +532,214 @@ func scanSecrets(ec *ctx.EvalContext, log func(string, ...interface{})) {
 	if len(ec.Discovery.SecretFindings) > 0 {
 		log("Hallazgos de secretos: %d", len(ec.Discovery.SecretFindings))
 	}
+}
+
+// -------------------------- Contexto git --------------------------
+
+// gatherGitContext consulta git para saber qué archivos están actualmente
+// trackeados y cuáles aparecen en el historial (aunque hoy no existan).
+// Esto es lo que le permite a los validadores distinguir un .env solo
+// local (sin riesgo de exposición) de uno trackeado o filtrado en commits
+// previos. Si git no está disponible o el repo no es git, deja Available
+// en false y registra el motivo en Error.
+func gatherGitContext(ec *ctx.EvalContext, log func(string, ...interface{})) {
+	if ec.RepoPath == "" {
+		return
+	}
+	// Validar que es un repo git
+	if _, err := os.Stat(filepath.Join(ec.RepoPath, ".git")); err != nil {
+		ec.Discovery.Git = ctx.GitContext{
+			Available: false,
+			Error:     "el repositorio no contiene .git/, no se puede inferir tracking",
+		}
+		log("git: repo sin .git/, evaluación de exposición caerá a presencia en disco")
+		return
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		ec.Discovery.Git = ctx.GitContext{
+			Available: false,
+			Error:     "binario 'git' no disponible en PATH del evaluador",
+		}
+		log("git: binario no encontrado en PATH; análisis git desactivado")
+		return
+	}
+
+	gc := ctx.GitContext{Available: true}
+
+	// Archivos trackeados hoy
+	if out, err := runGit(ec.RepoPath, "ls-files"); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				gc.TrackedFiles = append(gc.TrackedFiles, line)
+			}
+		}
+	} else {
+		gc.Error = "git ls-files falló: " + err.Error()
+	}
+
+	// Archivos que alguna vez existieron en el historial. Sirve para
+	// detectar .env removidos pero recuperables desde commits previos.
+	if out, err := runGit(ec.RepoPath,
+		"log", "--all", "--pretty=format:", "--name-only", "--diff-filter=A"); err == nil {
+		seen := make(map[string]struct{})
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if _, dup := seen[line]; dup {
+				continue
+			}
+			seen[line] = struct{}{}
+			gc.HistoryFiles = append(gc.HistoryFiles, line)
+		}
+	}
+
+	// ¿Existe .gitignore?
+	if _, err := os.Stat(filepath.Join(ec.RepoPath, ".gitignore")); err == nil {
+		gc.GitignoreSeen = true
+	}
+
+	ec.Discovery.Git = gc
+	log("git: %d trackeados, %d en historial, .gitignore=%v",
+		len(gc.TrackedFiles), len(gc.HistoryFiles), gc.GitignoreSeen)
+}
+
+// runGit ejecuta git con un timeout corto y devuelve stdout. Falla rápido
+// si git tarda más de 10s (por ejemplo si el repo es enorme).
+func runGit(repo string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// -------------------------- Análisis de archivos .env --------------------------
+
+// envFilePatterns son los nombres que el validador SVR-IAM-07 considera
+// archivos de variables de entorno. La lista cubre las convenciones más
+// comunes (Node, Python dotenv, Vite, Next.js, Rails, Laravel).
+var envFilePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`^\.env$`),
+	regexp.MustCompile(`^\.env\.[A-Za-z0-9_.-]+$`),
+}
+
+// scanEnvFiles detecta cada .env / .env.* presente en el repositorio o en el
+// historial git, y describe su estado de tracking. La verificación se separa
+// del scan de secretos para permitirle a SVR-IAM-07 razonar sobre la
+// existencia de los archivos como tales, incluso cuando no contienen
+// secretos detectables por regex (por ejemplo, llaves de API arbitrarias
+// que no encajan en ningún patrón).
+func scanEnvFiles(ec *ctx.EvalContext, log func(string, ...interface{})) {
+	if ec.RepoPath == "" {
+		return
+	}
+
+	// Conjunto consolidado: archivos en disco + trackeados + en historial.
+	// Cada archivo aparece una sola vez en el resultado final.
+	candidates := make(map[string]*ctx.EnvFileFinding)
+
+	add := func(rel string) *ctx.EnvFileFinding {
+		rel = normalizeRel(rel)
+		if !isEnvFile(rel) {
+			return nil
+		}
+		if f, ok := candidates[rel]; ok {
+			return f
+		}
+		f := &ctx.EnvFileFinding{Path: rel}
+		candidates[rel] = f
+		return f
+	}
+
+	// 1. Archivos en disco
+	_ = filepath.WalkDir(ec.RepoPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if pathsSkipped[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, _ := filepath.Rel(ec.RepoPath, path)
+		add(rel)
+		return nil
+	})
+
+	// 2. Archivos trackeados por git (capturan los que están en disco
+	//    pero también permiten detectar trackeo aunque WalkDir los haya
+	//    omitido por filtros).
+	for _, p := range ec.Discovery.Git.TrackedFiles {
+		if f := add(p); f != nil {
+			f.Tracked = true
+		}
+	}
+
+	// 3. Archivos en historial de git (caso crítico: .env borrado pero
+	//    recuperable desde commits anteriores, lo cual sigue siendo
+	//    exposición de secretos).
+	for _, p := range ec.Discovery.Git.HistoryFiles {
+		if f := add(p); f != nil {
+			f.InHistory = true
+		}
+	}
+
+	// 4. Estado de .gitignore: marca cada candidato como ignorado o no.
+	//    Esto distingue al developer cuidadoso (gitignored) del descuidado
+	//    (existe pero no está ignorado, riesgo latente de commit accidental).
+	if ec.Discovery.Git.Available {
+		for path, f := range candidates {
+			f.Gitignored = checkGitignored(ec.RepoPath, path)
+		}
+	}
+
+	// 5. ¿El archivo contenía secretos detectables? Esto refuerza la
+	//    severidad cuando además está trackeado o en historial.
+	for _, sec := range ec.Discovery.SecretFindings {
+		rel := normalizeRel(sec.File)
+		if f, ok := candidates[rel]; ok {
+			f.HasSecrets = true
+		}
+	}
+
+	for _, f := range candidates {
+		ec.Discovery.EnvFiles = append(ec.Discovery.EnvFiles, *f)
+	}
+	if len(ec.Discovery.EnvFiles) > 0 {
+		log("Archivos .env detectados: %d", len(ec.Discovery.EnvFiles))
+	}
+}
+
+func isEnvFile(rel string) bool {
+	base := filepath.Base(rel)
+	for _, re := range envFilePatterns {
+		if re.MatchString(base) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkGitignored consulta a git si una ruta sería ignorada por .gitignore.
+// `git check-ignore` devuelve exit code 0 si la ruta está ignorada y 1 si
+// no, así que tratamos cualquier exit no-cero como "no ignorada".
+func checkGitignored(repo, rel string) bool {
+	cmd := exec.Command("git", "check-ignore", "-q", rel)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	return cmd.Run() == nil
+}
+
+// normalizeRel deja rutas con separador "/" para comparar entre Windows y *nix.
+func normalizeRel(p string) string {
+	return filepath.ToSlash(strings.TrimPrefix(p, "./"))
 }
 
 // redactSecret oculta la mayor parte del valor para no incluir secretos reales

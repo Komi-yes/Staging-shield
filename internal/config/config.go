@@ -19,8 +19,8 @@ import (
 // Se diseñó para que un evaluador pueda describir un entorno sin tocar código.
 type FileConfig struct {
 	Environment struct {
-		Name string `yaml:"name"`
-		Type string `yaml:"type"`
+		Name  string `yaml:"name"`
+		Type  string `yaml:"type"`
 		Stack string `yaml:"stack"`
 	} `yaml:"environment"`
 

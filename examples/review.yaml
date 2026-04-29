@@ -1,0 +1,47 @@
+# Ejemplo de archivo de revisión manual.
+#
+# Uso:
+#   staging-shield scan --config examples/config.yaml --review examples/review.yaml
+#
+# El reporte HTML también permite generar este archivo de forma interactiva:
+# pulse "Exportar revisión" en el centro de revisión del reporte y guarde el
+# YAML descargado.
+#
+# Reglas:
+#   - Solo afectan a SVR en estado "manual" o "falta de evidencia".
+#     Las reglas que el motor ya resolvió automáticamente NO se sobreescriben
+#     a menos que use el sufijo "_force" en el status (uso avanzado, no se
+#     recomienda salvo para excepciones documentadas).
+#
+#   - Valores válidos del status:
+#       cumple
+#       cumple_parcial   (equivalente: parcial)
+#       no_cumple        (equivalente: nocumple)
+#       no_aplica        (la regla no aplica al stack del entorno; no entra al cálculo)
+#
+#   - Las SVR críticas que se marquen como "no_cumple" bloquean la promoción
+#     del entorno (Apto = 0), igual que si las hubiera detectado el motor.
+
+reviewer: "Daniel Palacios"
+timestamp: 2026-04-28T15:00:00Z
+
+verdicts:
+  # Verificación con el equipo de redes: tráfico solo por NGINX y Cloudflare
+  SVR-NET-02:
+    status: cumple
+    evidence: "Topología validada el 2026-04-15 con el equipo de redes. Todo el tráfico entrante pasa por Cloudflare → NGINX. Evidencia en el ticket NET-1042."
+
+  # Frontend y postgres comparten red docker-compose default
+  SVR-NET-10:
+    status: no_cumple
+    evidence: "docker-compose.yml usa la red default. Los contenedores app y db son visibles entre sí sin restricción. Pendiente refactor a redes nombradas (ticket OPS-2310)."
+
+  # Misma cuenta de Stripe en staging y producción
+  SVR-IAM-01:
+    status: no_cumple
+    evidence: "STRIPE_SECRET_KEY en variables de entorno de staging es el mismo valor que en producción. Crítico: cualquier compromiso de staging filtra prod."
+    notes: "Bloqueante para promoción. Rotar y separar antes del próximo deploy."
+
+  SVR-MON-01:
+    status: cumple_parcial
+    evidence: "NGINX y Postgres generan logs estructurados y rotación. La aplicación Node solo emite stdout sin formato JSON ni rotación."

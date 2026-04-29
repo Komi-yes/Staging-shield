@@ -58,10 +58,14 @@ func PrintConsole(ec *ctx.EvalContext, stats scoring.Stats, useColor bool) {
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, " %sSecurity Score Global%s: %s%.2f / 100%s\n",
 		c(colorBold), c(colorReset), c(colorBold)+scoreColor(stats.GlobalScore, useColor), stats.GlobalScore, c(colorReset))
-	fmt.Fprintf(w, " Cobertura automática   : %.1f%% (%d / %d reglas evaluables)\n",
-		stats.AutoCoverage,
-		stats.StatusCounts[ctx.StatusCumple]+stats.StatusCounts[ctx.StatusCumpleParcial]+stats.StatusCounts[ctx.StatusNoCumple],
-		stats.TotalRules)
+	fmt.Fprintf(w, " Cobertura total       : %.1f%% (%d / %d reglas con veredicto)\n",
+		stats.Coverage, stats.EvaluatedRules, stats.TotalRules)
+	if stats.ManuallyReviewed > 0 {
+		fmt.Fprintf(w, "    └─ automática      : %.1f%%  ·  manual (--review): %.1f%%  (%d veredictos humanos)\n",
+			stats.AutoCoverage, stats.ManualCoverage, stats.ManuallyReviewed)
+	} else {
+		fmt.Fprintf(w, "    └─ automática      : %.1f%%  ·  manual: 0%% (sin --review)\n", stats.AutoCoverage)
+	}
 	fmt.Fprintln(w)
 
 	// Score por dominio
