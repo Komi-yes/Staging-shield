@@ -30,6 +30,7 @@ type htmlData struct {
 	NoEvidenceView   []ruleView
 	ManualView       []ruleView
 	PassedView       []ruleView
+	PassedByDomain   []passedDomainBlock // PassedView agrupado por dominio para mostrar evidencia con transparencia
 	Recommendations  []string
 	OpenPortsList    []string
 	SecretsCount     int
@@ -37,6 +38,15 @@ type htmlData struct {
 	TrackedSecrets   int // secretos en archivos trackeados o en historial
 	ManualSlotsTotal int // total de SVR únicas que el usuario puede revisar manualmente
 	Discovery        discoveryView
+}
+
+// passedDomainBlock agrupa SVR cumplidas (cumple + parcial) por dominio para
+// que la sección de transparencia "SVR que cumplen y su evidencia" pueda
+// renderizarlas con un encabezado por dominio en lugar de en una sola lista
+// plana de 20+ tarjetas.
+type passedDomainBlock struct {
+	Name  string
+	Rules []ruleView
 }
 
 type domainView struct {
@@ -222,6 +232,27 @@ func buildHTMLData(ec *ctx.EvalContext, stats scoring.Stats) htmlData {
 	sort.SliceStable(data.CriticalView, func(i, j int) bool {
 		return data.CriticalView[i].ID < data.CriticalView[j].ID
 	})
+
+	// Agrupar PassedView por dominio respetando el orden canónico de dominios.
+	// Cada bloque queda con sus reglas ordenadas por ID para que la lectura sea
+	// estable entre corridas (SVR-MON-05). Los dominios sin reglas cumplidas se
+	// omiten para no producir bloques vacíos visualmente ruidosos.
+	{
+		byDom := make(map[ctx.Domain][]ruleView)
+		for _, rv := range data.PassedView {
+			d := ctx.Domain(rv.Domain)
+			byDom[d] = append(byDom[d], rv)
+		}
+		for _, d := range ctx.AllDomains() {
+			if rs, ok := byDom[d]; ok && len(rs) > 0 {
+				sort.SliceStable(rs, func(i, j int) bool { return rs[i].ID < rs[j].ID })
+				data.PassedByDomain = append(data.PassedByDomain, passedDomainBlock{
+					Name:  string(d),
+					Rules: rs,
+				})
+			}
+		}
+	}
 
 	// Recomendaciones
 	data.Recommendations = buildRecommendations(stats)

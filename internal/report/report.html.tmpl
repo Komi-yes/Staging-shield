@@ -303,6 +303,41 @@
   .env-state-tag.gitignored { background: rgba(63,185,80,0.18);  color: var(--good); }
   .env-state-tag.notignored { background: rgba(210,153,34,0.18); color: var(--warn); }
 
+  /* ====== Flash animation para cambios de score/cobertura ======
+     Se activa al aplicar veredictos manuales o al importar revisión, para
+     que el usuario perciba claramente que los porcentajes recalcularon. */
+  @keyframes flash-update {
+    0%   { background-color: rgba(79,156,249,0.55); }
+    35%  { background-color: rgba(79,156,249,0.35); }
+    100% { background-color: transparent; }
+  }
+  .flash {
+    animation: flash-update 1s ease-out;
+    border-radius: 4px;
+  }
+
+  /* ====== Sección de SVR cumplidas con evidencia (transparencia) ====== */
+  .passed-domain-block {
+    margin-bottom: 18px;
+  }
+  .passed-domain-block > h3 {
+    margin: 0 0 10px;
+    font-size: 14px;
+    color: var(--text-dim);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-left: 3px solid var(--good);
+    padding-left: 10px;
+  }
+  .passed-domain-block > h3 .ds-mini {
+    font-weight: 400;
+    color: var(--text-dim);
+    margin-left: 8px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
   @media (max-width: 800px) {
     .grid { grid-template-columns: 1fr; }
     .domain-row { grid-template-columns: 1fr; }
@@ -487,10 +522,16 @@
 
 {{if .PassedView}}
 <section>
-  <details>
-    <summary>SVR cumplidas (total o parcialmente) <span class="count">({{len .PassedView}})</span></summary>
-    {{range .PassedView}}{{template "ruleCard" .}}{{end}}
-  </details>
+  <h2>SVR que cumplen y su evidencia <span class="count">({{len .PassedView}} reglas — sustento del Security Score)</span></h2>
+  <p style="color: var(--text-dim); margin-bottom: 16px;">
+    Esta sección lista todas las reglas que el motor automático o un veredicto manual marcaron como <strong style="color: var(--good);">Cumple</strong> o <strong style="color: var(--warn);">Cumple parcialmente</strong>. La evidencia mostrada al pie de cada tarjeta es exactamente la que el modelo usó para subir el score: si la evidencia no convence al evaluador, el veredicto puede sobreescribirse desde los controles de la tarjeta o vía archivo de revisión.
+  </p>
+  {{range .PassedByDomain}}
+  <div class="passed-domain-block">
+    <h3>{{.Name}} <span class="ds-mini">— {{len .Rules}} regla(s) cumplen</span></h3>
+    {{range .Rules}}{{template "ruleCard" .}}{{end}}
+  </div>
+  {{end}}
 </section>
 {{end}}
 
@@ -716,7 +757,23 @@
     return out;
   }
 
-  function recalc() {
+  // Memoria del último cálculo. La usamos para flash-animar sólo los valores
+  // que efectivamente cambiaron y así dar retroalimentación clara al
+  // usuario cuando importa veredictos o marca reglas: el problema reportado
+  // por evaluadores fue "los porcentajes no se actualizan" cuando en
+  // realidad sí lo hacían, pero el cambio era silencioso.
+  let lastCalc = null;
+
+  function flash(el) {
+    if (!el) return;
+    el.classList.remove('flash');
+    // Forzar reflow para reiniciar la animación si se dispara dos veces seguidas
+    void el.offsetWidth;
+    el.classList.add('flash');
+  }
+
+  function recalc(opts) {
+    const flashOnChange = !!(opts && opts.flash);
     const domainAcc = {}; // domain -> {num, den, cumple, parcial, nocumple, noeval, evaluated}
     let globalNum = 0, globalDen = 0;
     let totalRules = 0, autoEval = 0, manualEval = 0;
@@ -765,6 +822,12 @@
     const autoCovPct  = totalRules > 0 ? (100 * autoEval   / totalRules) : 0;
     const manCovPct   = totalRules > 0 ? (100 * manualEval / totalRules) : 0;
 
+    // Detectar diff vs. último cálculo para flash-animar sólo los campos que
+    // cambiaron. Comparamos con tolerancia 0.05 para no flash-ear ruido por
+    // redondeo en el .toFixed(1).
+    const changed = (a, b) => Math.abs((a||0) - (b||0)) > 0.05;
+    const hadPrev = lastCalc !== null;
+
     setText("global-score-value", globalScore.toFixed(1));
     setClass("global-score-num", "score-num " + scoreClass(globalScore));
     setText("coverage-value",   coverage.toFixed(1));
@@ -772,12 +835,23 @@
     setText("manual-coverage",  manCovPct.toFixed(1));
     setText("evaluated-count",  String(autoEval + manualEval));
 
+    if (flashOnChange && hadPrev) {
+      if (changed(lastCalc.globalScore, globalScore)) flash(document.getElementById("global-score-num"));
+      if (changed(lastCalc.coverage,    coverage))    flash(document.getElementById("coverage-value"));
+      if (changed(lastCalc.autoCovPct,  autoCovPct))  flash(document.getElementById("auto-coverage"));
+      if (changed(lastCalc.manCovPct,   manCovPct))   flash(document.getElementById("manual-coverage"));
+      if (lastCalc.evaluated !== (autoEval + manualEval)) flash(document.getElementById("evaluated-count"));
+    }
+
     // === Actualizar score por dominio ===
+    const prevDomains = (lastCalc && lastCalc.domains) || {};
+    const newDomains = {};
     document.querySelectorAll('.domain-row').forEach(row => {
       const d = row.dataset.domain;
       const acc = domainAcc[d];
       if (!acc) return;
       const ds = acc.den > 0 ? (100 * acc.num / acc.den) : 0;
+      newDomains[d] = ds;
       const cls = scoreClass(ds);
       const sEl = row.querySelector('[data-domain-score]');
       const bEl = row.querySelector('[data-bar]');
@@ -788,6 +862,9 @@
       if (bEl) {
         bEl.style.width = Math.max(0, Math.min(100, ds)) + "%";
         bEl.className = "bar-fill " + cls;
+      }
+      if (flashOnChange && hadPrev && changed(prevDomains[d], ds)) {
+        flash(sEl);
       }
       const cp = row.querySelector('[data-c-pass]');
       const cP = row.querySelector('[data-c-partial]');
@@ -821,6 +898,20 @@
     const pct = Math.min(100, 100 * reviewedCount / total);
     const fill = document.getElementById("manual-progress-fill");
     if (fill) fill.style.width = pct + "%";
+    if (flashOnChange && hadPrev && lastCalc.reviewedCount !== reviewedCount) {
+      flash(document.getElementById("manual-progress-current"));
+    }
+
+    // Guardar último cálculo para detectar cambios en la próxima corrida.
+    lastCalc = {
+      globalScore: globalScore,
+      coverage: coverage,
+      autoCovPct: autoCovPct,
+      manCovPct: manCovPct,
+      evaluated: autoEval + manualEval,
+      reviewedCount: reviewedCount,
+      domains: newDomains
+    };
   }
 
   // Las rule cards pueden aparecer en varias secciones; este factor ajusta
@@ -851,7 +942,7 @@
       verdicts[ruleId] = { status: verdict, raw: verdict, evidence: getEvidence(ruleId) };
     }
     paintRule(ruleId);
-    recalc();
+    recalc({ flash: true });
   }
 
   function getEvidence(ruleId) {
@@ -965,10 +1056,19 @@
           paintRule(id);
           n++;
         }
-        recalc();
+        recalc({ flash: true });
 
-        // Mensaje claro al usuario sobre el resultado del import
-        let msg = "Importados " + n + " veredictos";
+        // Mensaje claro al usuario sobre el resultado del import. Se incluye
+        // explícitamente el delta de score para que el evaluador entienda
+        // que sí se actualizaron los porcentajes y no solo las tarjetas de
+        // abajo. Este fue el feedback principal de los usuarios iniciales.
+        let msg;
+        if (n > 0 && lastCalc) {
+          msg = "✓ " + n + " veredictos aplicados — Score " + lastCalc.globalScore.toFixed(1) +
+                " · Cobertura " + lastCalc.coverage.toFixed(1) + "%";
+        } else {
+          msg = "Importados " + n + " veredictos";
+        }
         const tail = [];
         if (skipped > 0)        tail.push(skipped + " ignorados por status inválido");
         if (unknown.length > 0) tail.push(unknown.length + " IDs desconocidos: " + unknown.slice(0,3).join(", ") + (unknown.length > 3 ? "..." : ""));
@@ -991,7 +1091,7 @@
       paintRule(id);
     }
     document.querySelectorAll('[data-evidence-input]').forEach(t => t.value = "");
-    recalc();
+    recalc({ flash: true });
     toast("Veredictos limpiados", "success");
   }
 
