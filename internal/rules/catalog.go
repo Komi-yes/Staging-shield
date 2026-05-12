@@ -166,8 +166,12 @@ func Catalog() []ctx.SVR {
 			Method:    "Revisión del estado de paquetes y contraste con la política definida.",
 			Severity:  ctx.SevAlta,
 			Reference: "NIST SI-2",
-			Mode:      ctx.ModeManual,
-			Critical:  false,
+			// Automática cuando el evaluador activó --local-host-scan; el
+			// validador devuelve StatusManualRequerido si no hay evidencia
+			// local-host disponible. Esto mantiene la semántica antigua para
+			// quien NO activa el modo invasivo.
+			Mode:     ctx.ModeAutomatic,
+			Critical: false,
 		},
 		{
 			ID:        "SVR-HAR-05",
@@ -177,7 +181,7 @@ func Catalog() []ctx.SVR {
 			Method:    "Inspección del host y validación del servicio de filtrado local.",
 			Severity:  ctx.SevMedia,
 			Reference: "CIS §3.5",
-			Mode:      ctx.ModeManual,
+			Mode:      ctx.ModeAutomatic,
 			Critical:  false,
 		},
 		{
@@ -210,7 +214,7 @@ func Catalog() []ctx.SVR {
 			Method:    "Inspección de permisos y contraste con criterios mínimos de seguridad.",
 			Severity:  ctx.SevAlta,
 			Reference: "CIS §6.1–6.2",
-			Mode:      ctx.ModeManual,
+			Mode:      ctx.ModeAutomatic,
 			Critical:  false,
 		},
 		{
@@ -232,7 +236,7 @@ func Catalog() []ctx.SVR {
 			Method:    "Revisión de mecanismos de logging administrativo y evidencias generadas.",
 			Severity:  ctx.SevMedia,
 			Reference: "CIS §4.1 / NIST AU-2",
-			Mode:      ctx.ModeManual,
+			Mode:      ctx.ModeAutomatic,
 			Critical:  false,
 		},
 
@@ -322,7 +326,7 @@ func Catalog() []ctx.SVR {
 			Method:    "Revisión de políticas y validación de protección de componentes críticos.",
 			Severity:  ctx.SevMedia,
 			Reference: "NIST AC-17",
-			Mode:      ctx.ModeManual,
+			Mode:      ctx.ModeAutomatic,
 			Critical:  false,
 		},
 
@@ -335,7 +339,7 @@ func Catalog() []ctx.SVR {
 			Method:    "Revisión de existencia, tipo y utilidad mínima de los registros generados.",
 			Severity:  ctx.SevMedia,
 			Reference: "NIST AU-2",
-			Mode:      ctx.ModeManual,
+			Mode:      ctx.ModeAutomatic,
 			Critical:  false,
 		},
 		{

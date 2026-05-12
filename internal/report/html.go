@@ -21,23 +21,25 @@ var htmlTemplate string
 
 // htmlData es lo que se le pasa a la plantilla.
 type htmlData struct {
-	Env              *ctx.EvalContext
-	Stats            scoring.Stats
-	GeneratedAt      string
-	DomainList       []domainView
-	CriticalView     []ruleView
-	FailedView       []ruleView
-	NoEvidenceView   []ruleView
-	ManualView       []ruleView
-	PassedView       []ruleView
-	PassedByDomain   []passedDomainBlock // PassedView agrupado por dominio para mostrar evidencia con transparencia
-	Recommendations  []string
-	OpenPortsList    []string
-	SecretsCount     int
-	HighSecrets      int
-	TrackedSecrets   int // secretos en archivos trackeados o en historial
-	ManualSlotsTotal int // total de SVR únicas que el usuario puede revisar manualmente
-	Discovery        discoveryView
+	Env                 *ctx.EvalContext
+	Stats               scoring.Stats
+	GeneratedAt         string
+	DomainList          []domainView
+	CriticalView        []ruleView
+	FailedView          []ruleView
+	NoEvidenceView      []ruleView
+	ManualView          []ruleView
+	PassedView          []ruleView
+	PassedByDomain      []passedDomainBlock // PassedView agrupado por dominio para mostrar evidencia con transparencia
+	Recommendations     []string
+	OpenPortsList       []string
+	SecretsCount        int
+	RealSecretsCount    int
+	FixtureSecretsCount int
+	HighSecrets         int
+	TrackedSecrets      int // secretos en archivos trackeados o en historial
+	ManualSlotsTotal    int // total de SVR únicas que el usuario puede revisar manualmente
+	Discovery           discoveryView
 }
 
 // passedDomainBlock agrupa SVR cumplidas (cumple + parcial) por dominio para
@@ -96,6 +98,7 @@ type discoveryView struct {
 	Secrets             []ctx.SecretFinding
 	Git                 ctx.GitContext
 	EnvFiles            []ctx.EnvFileFinding
+	LocalHost           ctx.LocalHostData
 }
 
 type headerView struct {
@@ -273,6 +276,7 @@ func buildHTMLData(ec *ctx.EvalContext, stats scoring.Stats) htmlData {
 		Secrets:             ec.Discovery.SecretFindings,
 		Git:                 ec.Discovery.Git,
 		EnvFiles:            ec.Discovery.EnvFiles,
+		LocalHost:           ec.Discovery.LocalHost,
 	}
 	for k, v := range ec.Discovery.HTTPHeaders {
 		data.Discovery.HTTPHeaders = append(data.Discovery.HTTPHeaders, headerView{Name: k, Value: v})
@@ -288,6 +292,11 @@ func buildHTMLData(ec *ctx.EvalContext, stats scoring.Stats) htmlData {
 		}
 		if s.Tracked || s.InHistory {
 			data.TrackedSecrets++
+		}
+		if s.IsFixture {
+			data.FixtureSecretsCount++
+		} else {
+			data.RealSecretsCount++
 		}
 	}
 

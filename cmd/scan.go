@@ -36,6 +36,11 @@ var (
 	scanVerbose     bool
 	scanNoSave      bool
 	scanFailOnNoApt bool
+	scanLocalHost   bool
+	scanSSHTarget   string
+	scanSSHKey      string
+	scanSSHPort     int
+	scanSSHSudo     bool
 )
 
 var scanCmd = &cobra.Command{
@@ -87,6 +92,26 @@ func init() {
 	f.BoolVarP(&scanVerbose, "verbose", "v", false, "Muestra trazas detalladas de descubrimiento")
 	f.BoolVar(&scanNoSave, "no-save", false, "No guardar snapshot de historial en disco")
 	f.BoolVar(&scanFailOnNoApt, "fail-on-noapt", false, "Devuelve exit code 2 si Apto=0 (útil en CI/CD)")
+	f.BoolVar(&scanLocalHost, "local-host-scan", false,
+		"ADVERTENCIA: Activa verificaciones INVASIVAS sobre el host LOCAL donde corre el cliente. "+
+			"Lee lista de paquetes, configuración de SSH, firewall local, permisos de archivos sensibles y estado de logs. "+
+			"Solo tiene sentido cuando el equipo donde corre el cliente ES el host de staging (típico en CI/CD o auditoría on-host). "+
+			"NO inspecciona hosts remotos. Habilita automatización de SVR-HAR-04, HAR-05, HAR-08, HAR-10 y MON-01.")
+
+	// Modo remoto SSH: misma cobertura que --local-host-scan pero contra un
+	// host remoto. Pensado para CI/CD que corra fuera del servidor de staging.
+	f.StringVar(&scanSSHTarget, "ssh-target", "",
+		"Activa el modo remoto: el cliente abre una sesión SSH al host indicado (formato: user@host) "+
+			"y ejecuta los mismos chequeos del modo invasivo sobre él. Mutuamente excluyente con --local-host-scan.")
+	f.IntVar(&scanSSHPort, "ssh-port", 22, "Puerto SSH del host remoto.")
+	f.StringVar(&scanSSHKey, "ssh-key", "",
+		"Ruta a llave privada para autenticarse contra --ssh-target. "+
+			"Si está vacío y existe STAGING_SHIELD_SSH_KEY como variable de entorno con el contenido de la llave, "+
+			"se escribe a un archivo temporal (modo 0600) y se usa esa ruta (útil para CI/CD). "+
+			"Si nada de eso está presente, se delega al agente ssh-agent o ~/.ssh por defecto.")
+	f.BoolVar(&scanSSHSudo, "ssh-sudo", false,
+		"Prefijar con 'sudo -n' los comandos que requieren privilegios (iptables, lectura de /etc/shadow, etc.). "+
+			"Requiere que la cuenta SSH tenga NOPASSWD configurado para esos comandos en /etc/sudoers.")
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
@@ -99,6 +124,46 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if scanVerbose {
 		fmt.Printf("[entrada] Entorno=%s Target=%s IP=%s Repo=%s\n",
 			ec.EnvironmentName, ec.Target, ec.IPAddress, ec.RepoPath)
+	}
+
+	// Advertencia visible al usuario cuando se activó algún modo invasivo.
+	// El mensaje aparece SIEMPRE (no solo en --verbose) para que sea
+	// imposible activar el modo por accidente sin notarlo.
+	if ec.SSHTarget != "" {
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "============================================================")
+		fmt.Fprintln(os.Stderr, "  MODO REMOTO SSH ACTIVADO (verificaciones invasivas)")
+		fmt.Fprintln(os.Stderr, "============================================================")
+		fmt.Fprintf(os.Stderr, "Inspeccionando host remoto: %s\n", ec.SSHTarget)
+		if ec.SSHUseSudo {
+			fmt.Fprintln(os.Stderr, "Modo sudo: comandos privilegiados con 'sudo -n'")
+		}
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "El cliente abrirá una sesión SSH y ejecutará comandos para")
+		fmt.Fprintln(os.Stderr, "leer estado de paquetes, configuración de SSH del host,")
+		fmt.Fprintln(os.Stderr, "firewall, permisos de archivos sensibles, auditd y logs.")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Asegúrese de que el host objetivo es EL CORRECTO. No use este")
+		fmt.Fprintln(os.Stderr, "modo contra producción si su intención es evaluar staging.")
+		fmt.Fprintln(os.Stderr, "============================================================")
+		fmt.Fprintln(os.Stderr, "")
+	} else if ec.LocalHostScan {
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "============================================================")
+		fmt.Fprintln(os.Stderr, "  MODO LOCAL-HOST-SCAN ACTIVADO (verificaciones invasivas)")
+		fmt.Fprintln(os.Stderr, "============================================================")
+		fmt.Fprintln(os.Stderr, "Este modo lee información sensible del equipo donde corre")
+		fmt.Fprintln(os.Stderr, "el cliente:")
+		fmt.Fprintln(os.Stderr, "  - Lista de paquetes y actualizaciones pendientes (apt/dnf/etc.)")
+		fmt.Fprintln(os.Stderr, "  - Estado del firewall local (ufw, firewalld, iptables)")
+		fmt.Fprintln(os.Stderr, "  - Configuración de SSH (/etc/ssh/sshd_config)")
+		fmt.Fprintln(os.Stderr, "  - Permisos de archivos sensibles (/etc/shadow, llaves SSH)")
+		fmt.Fprintln(os.Stderr, "  - Estado de auditd / journald y logs en /var/log")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "NUNCA inspecciona hosts remotos. Solo tiene sentido cuando")
+		fmt.Fprintln(os.Stderr, "este equipo ES el host de staging (CI/CD, auditoría on-host).")
+		fmt.Fprintln(os.Stderr, "============================================================")
+		fmt.Fprintln(os.Stderr, "")
 	}
 
 	// 2. DESCUBRIMIENTO -------------------------------------------------
@@ -212,6 +277,28 @@ func buildContextFromFlagsAndConfig() (*ctx.EvalContext, error) {
 		if len(scanAdminPorts) > 0 {
 			ec.AdminInterfaces = scanAdminPorts
 		}
+		if scanLocalHost {
+			ec.LocalHostScan = true
+		}
+		if scanSSHTarget != "" {
+			ec.SSHTarget = scanSSHTarget
+		}
+		if scanSSHPort != 0 && scanSSHPort != 22 {
+			ec.SSHPort = scanSSHPort
+		}
+		if scanSSHKey != "" {
+			ec.SSHKeyPath = scanSSHKey
+		}
+		if scanSSHSudo {
+			ec.SSHUseSudo = true
+		}
+		// Resolver llave SSH desde la variable de entorno cuando aplique.
+		// Esto es lo que un pipeline de CI/CD necesita: pasar el contenido
+		// de la llave como secret de la plataforma y que el cliente la
+		// materialice a un temp file con permisos 0600.
+		if err := resolveSSHKeyFromEnv(ec); err != nil {
+			return nil, fmt.Errorf("STAGING_SHIELD_SSH_KEY: %w", err)
+		}
 		return ec, nil
 	}
 
@@ -233,7 +320,70 @@ func buildContextFromFlagsAndConfig() (*ctx.EvalContext, error) {
 	if len(scanAdminPorts) > 0 {
 		ec.AdminInterfaces = scanAdminPorts
 	}
+	if scanLocalHost {
+		ec.LocalHostScan = true
+	}
+	if scanSSHTarget != "" {
+		ec.SSHTarget = scanSSHTarget
+	}
+	if scanSSHPort != 0 && scanSSHPort != 22 {
+		ec.SSHPort = scanSSHPort
+	}
+	if scanSSHKey != "" {
+		ec.SSHKeyPath = scanSSHKey
+	}
+	if scanSSHSudo {
+		ec.SSHUseSudo = true
+	}
+	if err := resolveSSHKeyFromEnv(ec); err != nil {
+		return nil, fmt.Errorf("STAGING_SHIELD_SSH_KEY: %w", err)
+	}
 	return ec, nil
+}
+
+// resolveSSHKeyFromEnv materializa la llave privada desde la variable de
+// entorno STAGING_SHIELD_SSH_KEY si está presente y no se proporcionó
+// --ssh-key. Esto es el patrón estándar para CI/CD: el secret manager
+// inyecta el contenido completo de la llave (incluyendo BEGIN/END lines)
+// y el cliente lo escribe a un archivo temp con modo 0600.
+//
+// La llave temporal vive solo durante el scan: no se borra explícitamente
+// porque el OS limpia /tmp y porque limpiarla podría borrar la llave del
+// usuario si por error puso ahí la ruta. El usuario es responsable de
+// asegurar que la variable de entorno no quede expuesta tras el scan.
+func resolveSSHKeyFromEnv(ec *ctx.EvalContext) error {
+	if ec.SSHTarget == "" {
+		return nil // sin target, nada que hacer
+	}
+	if ec.SSHKeyPath != "" {
+		return nil // ya hay ruta explícita
+	}
+	keyContent := os.Getenv("STAGING_SHIELD_SSH_KEY")
+	if keyContent == "" {
+		return nil // ni env ni flag: el sshRunner usará ssh-agent o ~/.ssh
+	}
+	// Escribir a un archivo temp con permisos restrictivos.
+	tmp, err := os.CreateTemp("", "staging-shield-ssh-*.key")
+	if err != nil {
+		return fmt.Errorf("no se pudo crear archivo temp: %w", err)
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("no se pudo cambiar permisos del archivo temp: %w", err)
+	}
+	// La llave puede no terminar en \n; ssh es tolerante pero forzamos por seguridad.
+	if !strings.HasSuffix(keyContent, "\n") {
+		keyContent += "\n"
+	}
+	if _, err := tmp.WriteString(keyContent); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("no se pudo escribir la llave al archivo temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("no se pudo cerrar el archivo temp: %w", err)
+	}
+	ec.SSHKeyPath = tmp.Name()
+	return nil
 }
 
 // writeJSONExport escribe un export JSON en formato similar al historial pero

@@ -1,54 +1,74 @@
-# Archivo de configuración de ejemplo para Staging Shield.
-# Describe el entorno de preproducción que se desea evaluar.
+# =============================================================================
+# Staging Shield - Configuración de ejemplo
+# =============================================================================
+# Este archivo describe el entorno de preproducción a evaluar. Copielo a la
+# raíz de su proyecto (o a donde prefiera), edite los campos para apuntar a su
+# entorno y ejecute:
 #
-# Uso:
-#   staging-shield scan --config examples/config.yaml
+#   .\staging-shield.exe scan --config examples\config.yaml --html-out reporte.html --verbose
 #
-# Todos los campos son opcionales salvo `environment.name` y al menos uno de
-# `target.domain` o `target.ip`. Cuanta más información se proporcione, más
-# SVR podrá evaluar el cliente automáticamente y menos quedarán como manuales.
+# (Linux/macOS):
+#   ./staging-shield scan --config examples/config.yaml --html-out reporte.html --verbose
+#
+# Todos los campos son opcionales excepto environment.name y al menos uno de
+# target.domain o target.ip. Los flags de la CLI sobreescriben este archivo.
+# =============================================================================
 
 environment:
-  # Identificador legible del entorno. Aparece en reportes y en el historial.
-  name: "equpo-backend"
-  # Tipo de entorno: staging, qa, uat, dev. Solo informativo.
-  type: "staging"
-  # Tipo de stack: web, api, container, k8s, serverless. Afecta qué SVR
-  # son aplicables (por ejemplo, las HAR de hardening de host se omiten en
-  # serverless).
-  stack: "web"
+  name: "staging-mi-app"           # nombre lógico del entorno (obligatorio)
+  type: "staging"                  # staging | preproduccion | uat | qa
+  stack: "web"                     # web | api | container | k8s
 
+# Objetivo a sondear. Mínimo uno de los dos. Si solo da el dominio, se hace
+# resolución DNS para obtener IPs; si da IP, se usa esa directamente.
 target:
-  # Dominio público o interno del entorno. Se acepta con o sin esquema.
-  domain: "https://equpo-backend-142374715720.us-east4.run.app/api/v1"
-  # IP del servidor (opcional, útil cuando no hay DNS o para verificar que
-  # la resolución coincide con la IP esperada).
-  ip: "10.20.30.40"
+  domain: "localhost"              # cambie por su dominio real, p.ej. staging.miempresa.com
+  ip: "127.0.0.1"                  # cambie por la IP del servidor objetivo
 
-# Lista de puertos que el responsable del entorno declara como esperados.
-# Cualquier puerto abierto fuera de esta lista se reportará como inesperado
-# (SVR-NET-04: superficie mínima).
-expected_ports:
-  - 8080
+# Puertos que SÍ deberían estar abiertos en el entorno. El escáner los usa
+# como línea base: cualquier puerto extra detectado se reporta como
+# "inesperado" en SVR-NET-04 / NET-09.
+expected_ports: [80, 443]
 
-# Ruta local al repositorio del proyecto. Si se proporciona, el módulo de
-# descubrimiento ejecuta una búsqueda de secretos (SVR-IAM-04 / IAM-05) con
-# patrones para AWS keys, GitHub tokens, JWT, claves privadas, URLs con
-# credenciales embebidas, etc.
+# Ruta local al repositorio del código que despliega este entorno. Si se
+# proporciona, el módulo de descubrimiento busca secretos en archivos de
+# configuración (.env, docker-compose.yml, etc.) y aplica análisis con
+# conciencia de git: distingue archivos trackeados / en historial / solo
+# locales para no penalizar lo que está correctamente en .gitignore.
 repository:
-  path: "C:/Users/danip/WebstormProjects/equpo-backend"
+  path: "."                        # "." si corre desde la raíz del proyecto
 
-# Referencias a producción contra las cuales el entorno de staging NO debería
-# tener conectividad (SVR-NET-01: aislamiento de redes). Pueden ser IPs, hosts
-# o ambos. El cliente prueba TCP a puertos comunes y reporta cualquier conexión
-# exitosa como evidencia de aislamiento insuficiente.
+# IPs/hosts de producción a los que el entorno de staging NO debería poder
+# llegar. El escáner intenta TCP a puertos comunes desde el equipo del
+# evaluador para detectar fugas de aislamiento (SVR-NET-01 / NET-06).
 production:
-  references:
-    - ""
+  references: []                   # ej: ["10.0.0.50", "db-prod.miempresa.com"]
 
-# Interfaces administrativas esperadas. Pueden ser puertos numéricos o rutas
-# HTTP. Cuando se exponen sin restricción de IP origen el cliente lo reporta
-# como SVR-NET-08 (acceso administrativo restringido).
-admin_interfaces:
-  - ""
-  - ""
+# Puertos o rutas administrativas declaradas (paneles, SSH, RDP, dashboards
+# internos). Sirven para SVR-NET-08 (interfaces administrativas no expuestas).
+admin_interfaces: []               # ej: ["22", "9090", "/admin"]
+
+# MODO INVASIVO (opt-in). Cuando es true, el cliente inspecciona el equipo
+# LOCAL donde corre (no hosts remotos): lista paquetes, lee sshd_config,
+# inspecciona el firewall local, comprueba permisos de archivos sensibles,
+# verifica auditd/journald y logs. Habilita la verificación automática de
+# SVR-HAR-04, HAR-05, HAR-08, HAR-10 y MON-01 que de otro modo quedan en
+# revisión manual. Solo tiene sentido cuando este equipo ES el host de
+# staging (típico en pipelines CI/CD o auditoría on-host). También se
+# puede activar desde la línea de comandos con --local-host-scan.
+local_host_scan: false
+
+# MODO REMOTO SSH (opt-in, mutuamente excluyente con local_host_scan).
+# Hace los MISMOS chequeos invasivos que local_host_scan pero contra un host
+# remoto vía SSH. Pensado para CI/CD que corre fuera del servidor de staging.
+# Detalles de configuración del host objetivo en docs/host-setup.md.
+ssh:
+  target:   ""    # ej: "staging-shield@staging.miempresa.com"
+  port:     22
+  key_path: ""    # ruta a llave privada local. Para CI/CD, prefiera la
+                  # variable de entorno STAGING_SHIELD_SSH_KEY (contenido
+                  # completo de la llave), que se materializa a un temp
+                  # file 0600 antes de invocar ssh.
+  use_sudo: false # prefijar comandos privilegiados con "sudo -n".
+                  # Requiere NOPASSWD en /etc/sudoers.d/ del host objetivo
+                  # SOLO para los comandos que el cliente usa (no sudo total).

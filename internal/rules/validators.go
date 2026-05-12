@@ -44,16 +44,28 @@ func evaluate(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 		return validateHar02(rule, ec)
 	case "SVR-HAR-03":
 		return validateHar03(rule, ec)
+	case "SVR-HAR-04":
+		return validateHar04(rule, ec)
+	case "SVR-HAR-05":
+		return validateHar05(rule, ec)
 	case "SVR-HAR-06":
 		return validateHar06(rule, ec)
+	case "SVR-HAR-08":
+		return validateHar08(rule, ec)
 	case "SVR-HAR-09":
 		return validateHar09(rule, ec)
+	case "SVR-HAR-10":
+		return validateHar10(rule, ec)
 	case "SVR-IAM-04":
 		return validateIam04(rule, ec)
 	case "SVR-IAM-05":
 		return validateIam05(rule, ec)
 	case "SVR-IAM-07":
 		return validateIam07(rule, ec)
+	case "SVR-IAM-08":
+		return validateIam08(rule, ec)
+	case "SVR-MON-01":
+		return validateMon01(rule, ec)
 	case "SVR-MON-05":
 		return validateMon05(rule, ec)
 	case "SVR-MON-06":
@@ -304,15 +316,47 @@ func validateHar02(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 }
 
 // SVR-HAR-03: Acceso administrativo remoto endurecido.
-// Heurística sobre banner SSH si fue capturado.
+// Heurística sobre banner SSH si fue capturado, y sshd_config si el modo
+// local-host-scan está activo (en ese caso podemos dictaminar con valores
+// reales de PermitRootLogin / PasswordAuthentication).
 func validateHar03(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
+	// Si tenemos sshd_config parseado, ese es el dato más fuerte y lo usamos
+	// directamente. El banner queda como evidencia complementaria.
+	lh := ec.Discovery.LocalHost
+	if lh.Available && lh.SSHConfigPath != "" {
+		permitRoot := strings.ToLower(lh.SSHPermitRoot)
+		passAuth := strings.ToLower(lh.SSHPasswordAuth)
+		// CIS §5.2: PermitRootLogin debe ser 'no' o 'prohibit-password'.
+		// PasswordAuthentication debe ser 'no' cuando hay claves disponibles.
+		issues := []string{}
+		if permitRoot == "yes" {
+			issues = append(issues, "PermitRootLogin=yes (CIS §5.2: debería ser 'no' o 'prohibit-password')")
+		}
+		if passAuth == "yes" {
+			issues = append(issues, "PasswordAuthentication=yes (CIS §5.2: debería ser 'no' cuando se usan llaves)")
+		}
+		if len(issues) > 0 {
+			return ctx.RuleResult{
+				Rule:     rule,
+				Status:   ctx.StatusNoCumple,
+				Evidence: fmt.Sprintf("Configuración SSH en %s: %s.", lh.SSHConfigPath, strings.Join(issues, "; ")),
+				Notes:    "Edite sshd_config y recargue el servicio (systemctl reload ssh).",
+			}
+		}
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusCumple,
+			Evidence: fmt.Sprintf("Configuración SSH leída de %s: PermitRootLogin=%s, PasswordAuthentication=%s. Acceso remoto endurecido según CIS §5.2.", lh.SSHConfigPath, lh.SSHPermitRoot, lh.SSHPasswordAuth),
+		}
+	}
+
 	banner, ok := ec.Discovery.Banners[22]
 	if !ok {
 		// SSH no detectado en 22, podría estar en otro puerto o cerrado
 		return ctx.RuleResult{
 			Rule:   rule,
 			Status: ctx.StatusFaltaEvidencia,
-			Notes:  "No se detectó SSH en el puerto 22. Si usa un puerto distinto o RDP, verifique manualmente la configuración (PermitRootLogin, PasswordAuthentication, etc.).",
+			Notes:  "No se detectó SSH en el puerto 22 y no se activó --local-host-scan. Si usa un puerto distinto o RDP, verifique manualmente la configuración (PermitRootLogin, PasswordAuthentication, etc.).",
 		}
 	}
 	// Versiones OpenSSH muy antiguas (<7.0) son señal mala
@@ -327,7 +371,7 @@ func validateHar03(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 		Rule:     rule,
 		Status:   ctx.StatusCumpleParcial,
 		Evidence: fmt.Sprintf("SSH responde en 22 con banner: %s. La versión es razonable, pero la verificación final requiere revisar /etc/ssh/sshd_config (CIS §5.2).", banner),
-		Notes:    "Verifique parámetros: PermitRootLogin no, PasswordAuthentication no si usa llaves, Protocol 2, MaxAuthTries bajo, LoginGraceTime bajo, etc.",
+		Notes:    "Verifique parámetros: PermitRootLogin no, PasswordAuthentication no si usa llaves, Protocol 2, MaxAuthTries bajo, LoginGraceTime bajo, etc. Active --local-host-scan para que el cliente lea estos valores directamente.",
 	}
 }
 
@@ -415,6 +459,196 @@ func validateHar09(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 	}
 }
 
+// fallbackToManual devuelve un resultado StatusManualRequerido para reglas
+// que solo se pueden automatizar bajo --local-host-scan. Cuando el usuario
+// no activó el modo invasivo, estas reglas se comportan exactamente como
+// antes: aparecen en el centro de revisión manual del HTML.
+func fallbackToManual(rule ctx.SVR, hint string) ctx.RuleResult {
+	return ctx.RuleResult{
+		Rule:   rule,
+		Status: ctx.StatusManualRequerido,
+		Notes:  hint + " Para automatizar esta verificación, ejecute el cliente sobre el propio host de staging con --local-host-scan (modo invasivo). Si lo está ejecutando desde otro equipo, complete la valoración desde el centro de revisión del reporte.",
+	}
+}
+
+// SVR-HAR-04: Parches del sistema.
+// Bajo --local-host-scan inspeccionamos el gestor de paquetes local.
+// Umbrales: 0 actualizaciones -> Cumple. 1+ de seguridad -> No cumple.
+// Otros casos -> Cumple parcial proporcional al volumen.
+func validateHar04(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
+	if !ec.Discovery.LocalHost.Available {
+		return fallbackToManual(rule, "El estado de parches requiere consultar el gestor de paquetes del host.")
+	}
+	lh := ec.Discovery.LocalHost
+	if lh.PackagesError != "" {
+		return ctx.RuleResult{
+			Rule:   rule,
+			Status: ctx.StatusFaltaEvidencia,
+			Notes:  "Error al consultar el gestor de paquetes: " + lh.PackagesError,
+		}
+	}
+	if lh.PackagesOutdated == 0 {
+		ev := "Sin actualizaciones pendientes en el gestor de paquetes."
+		if lh.PackagesCheckedAt != "" {
+			ev += " " + lh.PackagesCheckedAt
+		}
+		return ctx.RuleResult{Rule: rule, Status: ctx.StatusCumple, Evidence: ev}
+	}
+	if lh.SecurityUpdatesPending > 0 {
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusNoCumple,
+			Evidence: fmt.Sprintf("Hay %d actualizaciones de seguridad pendientes y %d actualizaciones totales pendientes. %s", lh.SecurityUpdatesPending, lh.PackagesOutdated, lh.PackagesCheckedAt),
+			Notes:    "Aplique las actualizaciones de seguridad de inmediato (apt upgrade, dnf upgrade-minimal --security, etc.). Considere automatizar con unattended-upgrades.",
+		}
+	}
+	// Sin seguridad explícita, decimos parcial proporcionalmente.
+	st := ctx.StatusCumpleParcial
+	if lh.PackagesOutdated > 50 {
+		st = ctx.StatusNoCumple
+	}
+	return ctx.RuleResult{
+		Rule:     rule,
+		Status:   st,
+		Evidence: fmt.Sprintf("Hay %d paquetes con actualización disponible (sin diferenciación clara de seguridad). %s", lh.PackagesOutdated, lh.PackagesCheckedAt),
+		Notes:    "Refresque el cache (apt update / dnf check-update) y revise cuáles son updates de seguridad. Establezca una ventana periódica de aplicación.",
+	}
+}
+
+// SVR-HAR-05: Firewall local activo.
+func validateHar05(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
+	if !ec.Discovery.LocalHost.Available {
+		return fallbackToManual(rule, "El estado del firewall local debe consultarse sobre el host (ufw, firewalld, nftables, iptables).")
+	}
+	lh := ec.Discovery.LocalHost
+	if lh.FirewallTool == "none" || lh.FirewallTool == "" {
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusNoCumple,
+			Evidence: "No se detectó ninguna herramienta de firewall local activa en el host (ufw/firewalld/nftables/iptables).",
+			Notes:    "Instale y configure un firewall local. En Ubuntu el camino más simple es ufw: 'ufw default deny incoming', 'ufw allow 22/tcp', 'ufw enable'.",
+		}
+	}
+	if !lh.FirewallActive {
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusNoCumple,
+			Evidence: fmt.Sprintf("Se detectó %s pero está inactivo o sin reglas significativas.", lh.FirewallTool),
+			Notes:    "Active el firewall y agregue una política de denegación por defecto para tráfico entrante.",
+		}
+	}
+	if !lh.FirewallDefaultDeny {
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusCumpleParcial,
+			Evidence: fmt.Sprintf("%s está activo con %d reglas, pero la política por defecto no es 'deny/drop'.", lh.FirewallTool, lh.FirewallRulesCount),
+			Notes:    "Cambie la política por defecto del chain INPUT a DROP o REJECT y abra explícitamente solo los puertos necesarios.",
+		}
+	}
+	return ctx.RuleResult{
+		Rule:     rule,
+		Status:   ctx.StatusCumple,
+		Evidence: fmt.Sprintf("%s activo con %d reglas y política de denegación por defecto en tráfico entrante.", lh.FirewallTool, lh.FirewallRulesCount),
+	}
+}
+
+// SVR-HAR-08: Permisos de archivos sensibles.
+func validateHar08(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
+	if !ec.Discovery.LocalHost.Available {
+		return fallbackToManual(rule, "Los permisos sobre /etc/shadow, claves SSH del host y sudoers requieren inspección directa del filesystem.")
+	}
+	bad := ec.Discovery.LocalHost.SensitiveFiles
+	if len(bad) == 0 {
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusCumple,
+			Evidence: "Los archivos sensibles inspeccionados (/etc/shadow, /etc/sudoers, claves SSH del host, authorized_keys de root) tienen permisos dentro de lo esperado por CIS §6.1–6.2.",
+		}
+	}
+	descs := make([]string, 0, len(bad))
+	for _, f := range bad {
+		descs = append(descs, fmt.Sprintf("%s (%s)", f.Path, f.Problem))
+	}
+	hasCritical := false
+	for _, f := range bad {
+		// /etc/shadow y claves privadas SSH con permisos laxos son críticos
+		if strings.Contains(f.Path, "shadow") || strings.Contains(f.Path, "_key") {
+			hasCritical = true
+			break
+		}
+	}
+	st := ctx.StatusCumpleParcial
+	if hasCritical {
+		st = ctx.StatusNoCumple
+	}
+	return ctx.RuleResult{
+		Rule:     rule,
+		Status:   st,
+		Evidence: "Archivos con permisos laxos: " + strings.Join(descs, "; "),
+		Notes:    "Restrinja con 'chmod 0600' las claves privadas, 'chmod 0640' /etc/shadow, 'chmod 0440' /etc/sudoers. Verifique también el dueño (chown root:root).",
+	}
+}
+
+// SVR-HAR-10: Trazabilidad de cambios — auditoría administrativa.
+func validateHar10(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
+	if !ec.Discovery.LocalHost.Available {
+		return fallbackToManual(rule, "La verificación de auditoría requiere comprobar auditd / journald sobre el host.")
+	}
+	lh := ec.Discovery.LocalHost
+	if lh.AuditdActive {
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusCumple,
+			Evidence: "auditd está instalado y activo. Las reglas en /etc/audit/auditd.conf permiten trazar accesos privilegiados y cambios de configuración.",
+		}
+	}
+	// Solo journald
+	for _, l := range lh.LogsPresent {
+		if strings.Contains(l, "journald") {
+			return ctx.RuleResult{
+				Rule:     rule,
+				Status:   ctx.StatusCumpleParcial,
+				Evidence: "auditd no está activo. systemd-journald sí provee logs del sistema pero sin las garantías de auditoría inmutable de auditd (CIS §4.1).",
+				Notes:    "Instale auditd (sudo apt install auditd / sudo dnf install audit) y configure reglas mínimas para syscalls sensibles (execve, chmod sobre /etc, etc.).",
+			}
+		}
+	}
+	return ctx.RuleResult{
+		Rule:     rule,
+		Status:   ctx.StatusNoCumple,
+		Evidence: "No se detectó auditd ni systemd-journald activos. No hay trazabilidad consistente de cambios administrativos en el host.",
+		Notes:    "Instale auditd y habilite journald persistente (mkdir -p /var/log/journal).",
+	}
+}
+
+// SVR-MON-01: Logs de acceso, error y administración.
+func validateMon01(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
+	if !ec.Discovery.LocalHost.Available {
+		return fallbackToManual(rule, "Verificar la generación de logs requiere inspeccionar /var/log y el estado de los daemons de logging.")
+	}
+	lh := ec.Discovery.LocalHost
+	if len(lh.LogsPresent) == 0 {
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusNoCumple,
+			Evidence: "No se detectaron archivos de log significativos en /var/log ni daemons de logging activos.",
+			Notes:    "Habilite rsyslog/journald y configure el servidor web para escribir logs (NGINX: access_log/error_log, Apache: CustomLog/ErrorLog).",
+		}
+	}
+	st := ctx.StatusCumple
+	notes := ""
+	if !lh.LogsRotating {
+		st = ctx.StatusCumpleParcial
+		notes = "Los logs existen pero no se detectó configuración de logrotate. Sin rotación los logs pueden llenar el disco; agregue /etc/logrotate.d/<app> con rotación diaria/semanal."
+	}
+	return ctx.RuleResult{
+		Rule:     rule,
+		Status:   st,
+		Evidence: "Logs presentes en el host: " + strings.Join(lh.LogsPresent, ", ") + ".",
+		Notes:    notes,
+	}
+}
+
 // =====================================================================
 // Dominio: Identidades, acceso y secretos
 // =====================================================================
@@ -436,20 +670,39 @@ func validateIam04(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 		}
 	}
 
-	totalFindings := len(ec.Discovery.SecretFindings)
+	// Separar fixtures (test/ejemplos/placeholders) de hallazgos reales antes
+	// de cualquier otra clasificación. Los fixtures se reportan informalmente
+	// en evidence pero NUNCA penalizan el score: una cadena "Bearer
+	// invalid-token-for-test" en un archivo .test.js no es exposición de
+	// credenciales y no debe bloquear la promoción de un entorno.
+	realFindings := []ctx.SecretFinding{}
+	fixtureFindings := []ctx.SecretFinding{}
+	for _, f := range ec.Discovery.SecretFindings {
+		if f.IsFixture {
+			fixtureFindings = append(fixtureFindings, f)
+		} else {
+			realFindings = append(realFindings, f)
+		}
+	}
+
+	totalReal := len(realFindings)
+	fixtureNote := ""
+	if len(fixtureFindings) > 0 {
+		fixtureNote = fmt.Sprintf(" Se filtraron %d hallazgos en archivos de test/ejemplo (no penalizan, ver tabla de evidencia técnica).", len(fixtureFindings))
+	}
 
 	// Sin repo git, no hay forma de distinguir local vs expuesto: usar la
-	// señal disponible (presencia en disco).
+	// señal disponible (presencia en disco), pero excluyendo fixtures.
 	if !ec.Discovery.Git.Available {
-		if totalFindings == 0 {
+		if totalReal == 0 {
 			return ctx.RuleResult{
 				Rule:     rule,
 				Status:   ctx.StatusCumple,
-				Evidence: fmt.Sprintf("Búsqueda en %s no encontró patrones de secretos en archivos de configuración, código o manifiestos.", ec.RepoPath),
+				Evidence: fmt.Sprintf("Búsqueda en %s no encontró patrones de secretos en archivos de configuración, código o manifiestos (excluyendo tests/ejemplos).%s", ec.RepoPath, fixtureNote),
 				Notes:    "El repositorio no es un repo git, por lo que no se pudo distinguir entre archivos públicos y solo locales. Inicialice git para una evaluación más justa.",
 			}
 		}
-		hi := countHighSeverity(ec.Discovery.SecretFindings)
+		hi := countHighSeverity(realFindings)
 		st := ctx.StatusCumpleParcial
 		if hi > 0 {
 			st = ctx.StatusNoCumple
@@ -457,16 +710,17 @@ func validateIam04(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 		return ctx.RuleResult{
 			Rule:     rule,
 			Status:   st,
-			Evidence: fmt.Sprintf("Se detectaron %d posibles secretos en el repositorio (%d de severidad alta). El repositorio no es git, no fue posible filtrar por exposición pública.", totalFindings, hi),
-			Notes:    "Rote las credenciales detectadas y muévalas a un gestor de secretos. Si son falsos positivos, márquelos en allowlist.",
+			Evidence: fmt.Sprintf("Se detectaron %d posibles secretos en el repositorio (%d de severidad alta).%s El repositorio no es git, no fue posible filtrar por exposición pública.", totalReal, hi, fixtureNote),
+			Notes:    "Rote las credenciales detectadas y muévalas a un gestor de secretos. Si son falsos positivos, mueva el archivo a un directorio test/ o renómbrelo con sufijo .test/.spec para que el cliente los excluya.",
 		}
 	}
 
 	// Con repo git: separar lo realmente expuesto de lo solo local.
+	// Trabajamos sobre realFindings (los fixtures ya quedaron afuera).
 	exposed := []ctx.SecretFinding{}
 	historical := []ctx.SecretFinding{}
 	localOnly := []ctx.SecretFinding{}
-	for _, f := range ec.Discovery.SecretFindings {
+	for _, f := range realFindings {
 		switch {
 		case f.Tracked:
 			exposed = append(exposed, f)
@@ -478,8 +732,8 @@ func validateIam04(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 	}
 
 	if len(exposed) == 0 && len(historical) == 0 {
-		ev := fmt.Sprintf("No se encontraron secretos en archivos trackeados por git ni en el historial. Total escaneado: %d archivos. Hallazgos solo locales (no expuestos): %d.",
-			len(ec.Discovery.Git.TrackedFiles), len(localOnly))
+		ev := fmt.Sprintf("No se encontraron secretos en archivos trackeados por git ni en el historial (excluyendo fixtures). Total escaneado: %d archivos. Hallazgos solo locales (no expuestos): %d.%s",
+			len(ec.Discovery.Git.TrackedFiles), len(localOnly), fixtureNote)
 		notes := ""
 		if len(localOnly) > 0 {
 			notes = "Hay secretos en archivos locales no trackeados (típicamente .env de desarrollo). No constituyen exposición pública mientras .gitignore impida su inclusión accidental, pero conviene rotarlos si se sospecha que pudieron filtrarse por otra vía."
@@ -514,7 +768,7 @@ func validateIam04(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 	return ctx.RuleResult{
 		Rule:     rule,
 		Status:   st,
-		Evidence: "Hallazgos: " + strings.Join(parts, "; ") + ".",
+		Evidence: "Hallazgos: " + strings.Join(parts, "; ") + "." + fixtureNote,
 		Notes:    "Los secretos en archivos trackeados o en historial git deben considerarse comprometidos: rótelos de inmediato y muévalos a un gestor de secretos. Para limpiar el historial considere git filter-repo o BFG. Los hallazgos solo locales no afectan el score pero conviene revisarlos por higiene.",
 	}
 }
@@ -593,6 +847,9 @@ func validateIam07(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 		envInRepo := len(ec.Discovery.EnvFiles) > 0
 		urlsEmbedded := 0
 		for _, f := range ec.Discovery.SecretFindings {
+			if f.IsFixture {
+				continue
+			}
 			if strings.Contains(f.Pattern, "URL") || f.Pattern == "Password Assignment" {
 				urlsEmbedded++
 			}
@@ -630,9 +887,14 @@ func validateIam07(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 		}
 	}
 
-	// URLs/credenciales embebidas en archivos *trackeados* (no las que solo viven local)
+	// URLs/credenciales embebidas en archivos *trackeados* (no las que solo viven local).
+	// Excluimos fixtures (test/ejemplos): "postgres://demo:demo@localhost/test"
+	// dentro de un test no constituye una variable sensible expuesta.
 	embeddedTracked := 0
 	for _, f := range ec.Discovery.SecretFindings {
+		if f.IsFixture {
+			continue
+		}
 		if !f.Tracked && !f.InHistory {
 			continue
 		}
@@ -698,6 +960,129 @@ func envFileList(fs []ctx.EnvFileFinding) string {
 		names = append(names, f.Path)
 	}
 	return strings.Join(names, ", ")
+}
+
+// SVR-IAM-08: el acceso desde redes externas hacia recursos internos debe
+// estar asociado a identidades autorizadas.
+//
+// Lógica de evaluación automática:
+//   - Si el cliente no detectó interfaces administrativas expuestas, no hay
+//     superficie externa que validar y la regla queda en "Cumple": el
+//     entorno no expone recursos internos sin restricción.
+//   - Si hay interfaces admin expuestas, se inspecciona el resultado del
+//     probe HTTP (módulo de descubrimiento) sobre cada una:
+//   - Todas con AuthChallenge=true (401/403/WWW-Auth/redirect a login)
+//     -> Cumple parcial. Hay control de identidad pero la mera exposición
+//     del panel a internet sigue siendo subóptima (debería estar tras VPN
+//     o IP allowlist).
+//   - Alguna sin AuthChallenge (200 directo) -> No cumple. El recurso
+//     responde sin pedir credenciales: cualquier identidad de internet
+//     puede acceder.
+//   - Puerto no-HTTP (SSH, RDP, BD) sin probe -> Cumple parcial: SSH/RDP
+//     tienen su propia auth, pero la exposición directa a internet sin
+//     red de confianza intermedia requiere validar manualmente que se
+//     use llave + MFA.
+//   - Si el probe falló (ProbeError no vacío y Probed=false), queda en
+//     "Falta evidencia" para que el evaluador lo cierre manualmente.
+func validateIam08(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
+	if len(ec.Discovery.AdminExposed) == 0 {
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusCumple,
+			Evidence: "No se detectaron interfaces administrativas expuestas a redes externas. El control de identidad sobre recursos internos queda implícitamente cubierto por la ausencia de superficie de acceso pública.",
+		}
+	}
+
+	type bucket struct {
+		Description   string
+		Port          int
+		AuthChallenge bool
+		HTTPStatus    int
+		NonHTTP       bool
+		ProbeFailed   bool
+	}
+	var buckets []bucket
+	for _, af := range ec.Discovery.AdminExposed {
+		b := bucket{Description: af.Description, Port: af.Port}
+		if !af.Probed && af.ProbeError != "" && !strings.Contains(af.ProbeError, "no-HTTP") {
+			b.ProbeFailed = true
+		} else if !af.Probed && strings.Contains(af.ProbeError, "no-HTTP") {
+			b.NonHTTP = true
+		} else {
+			b.AuthChallenge = af.AuthChallenge
+			b.HTTPStatus = af.HTTPStatus
+			b.NonHTTP = strings.Contains(af.ProbeError, "no-HTTP")
+		}
+		buckets = append(buckets, b)
+	}
+
+	// Cualquier endpoint HTTP que respondió 200 sin auth challenge es un
+	// "no cumple" automático: cualquiera en internet puede acceder.
+	openHTTP := []bucket{}
+	withAuth := []bucket{}
+	nonHTTP := []bucket{}
+	failed := []bucket{}
+	for _, b := range buckets {
+		switch {
+		case b.ProbeFailed:
+			failed = append(failed, b)
+		case b.NonHTTP:
+			nonHTTP = append(nonHTTP, b)
+		case b.AuthChallenge:
+			withAuth = append(withAuth, b)
+		default:
+			openHTTP = append(openHTTP, b)
+		}
+	}
+
+	if len(openHTTP) > 0 {
+		descs := make([]string, 0, len(openHTTP))
+		for _, b := range openHTTP {
+			descs = append(descs, fmt.Sprintf("%d/%s (HTTP %d sin auth)", b.Port, b.Description, b.HTTPStatus))
+		}
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusNoCumple,
+			Evidence: fmt.Sprintf("Interfaces administrativas que responden con contenido sin requerir credenciales: %s. Cualquier usuario de internet puede acceder a ellas sin asociarse a una identidad autorizada.", strings.Join(descs, "; ")),
+			Notes:    "Coloque estos paneles detrás de una VPN, IP allowlist, o un reverse proxy con SSO. Verifique que el código de la aplicación obligue autenticación incluso en endpoints '/' del panel.",
+		}
+	}
+
+	if len(failed) > 0 && len(withAuth) == 0 && len(nonHTTP) == 0 {
+		// Solo hay interfaces que no respondieron al probe — no podemos
+		// dictaminar automáticamente.
+		return ctx.RuleResult{
+			Rule:   rule,
+			Status: ctx.StatusFaltaEvidencia,
+			Notes:  "Se detectaron interfaces admin expuestas pero el probe HTTP no concluyó (timeouts, certificado inválido, etc.). Verifique manualmente que requieren autenticación.",
+		}
+	}
+
+	parts := []string{}
+	if len(withAuth) > 0 {
+		descs := make([]string, 0, len(withAuth))
+		for _, b := range withAuth {
+			descs = append(descs, fmt.Sprintf("%d/%s (HTTP %d con auth)", b.Port, b.Description, b.HTTPStatus))
+		}
+		parts = append(parts, fmt.Sprintf("%d con desafío de autenticación: %s", len(withAuth), strings.Join(descs, ", ")))
+	}
+	if len(nonHTTP) > 0 {
+		descs := make([]string, 0, len(nonHTTP))
+		for _, b := range nonHTTP {
+			descs = append(descs, fmt.Sprintf("%d/%s", b.Port, b.Description))
+		}
+		parts = append(parts, fmt.Sprintf("%d puertos no-HTTP (SSH/RDP/BD) cuya autenticación no es inspeccionable desde el cliente: %s", len(nonHTTP), strings.Join(descs, ", ")))
+	}
+	if len(failed) > 0 {
+		parts = append(parts, fmt.Sprintf("%d sin respuesta concluyente al probe", len(failed)))
+	}
+
+	return ctx.RuleResult{
+		Rule:     rule,
+		Status:   ctx.StatusCumpleParcial,
+		Evidence: "Interfaces admin expuestas con control de identidad: " + strings.Join(parts, "; ") + ".",
+		Notes:    "Aunque los endpoints exigen autenticación, exponer paneles internos directamente a internet aumenta innecesariamente la superficie de ataque. Considere VPN, ZTNA o IP allowlist incluso cuando hay credenciales.",
+	}
 }
 
 // =====================================================================

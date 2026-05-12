@@ -216,7 +216,7 @@ El cliente reporta **tres métricas de cobertura** en cada corrida:
 - **Cobertura manual** — % de SVR resueltas por veredicto humano vía `--review` o desde el centro de revisión del HTML.
 - **Cobertura total** — la suma de las dos anteriores. Es la métrica que debe acompañar al Security Score: un score de 90 con cobertura del 30% no significa lo mismo que con cobertura del 90%.
 
-De las 36 SVR, el cliente automatiza **17** de forma directa o semi-automática. Las restantes 19 dependen de juicio humano (políticas, procedimientos, acceso administrativo). Para que estas no queden permanentemente fuera del cálculo, el cliente expone dos vías de revisión manual:
+De las 36 SVR, el cliente automatiza **17 de forma estándar** (DNS, puertos, TLS, headers, secretos con git-awareness, probes de interfaces admin) o **24 con modo invasivo `--local-host-scan`** activado. Las restantes dependen de juicio humano (políticas, procedimientos, acceso a infraestructura interna). Para que las manuales no queden fuera del cálculo, el cliente expone dos vías de revisión:
 
 ### Centro de revisión interactivo (HTML)
 
@@ -253,6 +253,132 @@ El validador SVR-IAM-04 (secretos en código) y SVR-IAM-07 (variables sensibles)
 | No existe | **Cumple**. |
 
 Los secretos detectados por patrón (AWS keys, tokens, URLs con credenciales) se etiquetan con su estado de exposición en el reporte HTML: solo los que están en archivos trackeados o en historial penalizan SVR-IAM-04. Cuando el repositorio no es git, los validadores caen al comportamiento previo (presencia en disco) y lo notifican en el reporte.
+
+### Filtro de tests y placeholders
+
+El detector ignora secretos que sean claramente fixtures de prueba. Quedan visibles en la tabla de evidencia pero **no penalizan el score**:
+
+- **Archivos bajo rutas de test**: `test/`, `tests/`, `__tests__/`, `spec/`, `e2e/`, `cypress/`, `playwright/`, `fixtures/`, `mocks/`, `testdata/`, `examples/`.
+- **Sufijos de archivos de test**: `.test.`, `.spec.`, `_test.`, `_spec.`, `-test.`.
+- **Palabras placeholder en el valor**: `invalid`, `fake`, `dummy`, `placeholder`, `your-token`, `changeme`, `xxxx`, `<token>`, `lorem`, `abc123`, etc.
+
+Así, un literal como `Bearer invalid-token-for-test` dentro de `tasks.http.integration.test.js` no genera falso positivo.
+
+---
+
+## Modo invasivo: `--local-host-scan`
+
+Automatiza **5 reglas adicionales de hardening** que requieren leer estado del sistema. **Solo inspecciona el equipo donde corre el cliente; nunca hosts remotos.** Activación:
+
+```bash
+# CLI
+./staging-shield scan --config config.yaml --local-host-scan
+
+# YAML
+local_host_scan: true
+```
+
+Al activarlo:
+
+1. **stderr muestra un banner de advertencia** con la lista exacta de cosas que va a leer del sistema, imposible de ignorar.
+2. **El HTML genera una sección dedicada** con todos los hallazgos y una pill naranja en el encabezado.
+3. **Cada regla automatizada incluye en su evidencia** el comando o archivo consultado.
+
+### Reglas que pasan de manual a automático
+
+| Regla | Verificación |
+|-------|--------------|
+| **SVR-HAR-03** | Lee `/etc/ssh/sshd_config` real (PermitRootLogin, PasswordAuthentication) en vez de inferir por banner. |
+| **SVR-HAR-04** | Cuenta paquetes pendientes vía `apt list --upgradable`, `dnf check-update`, `pacman -Qu`. Diferencia actualizaciones de seguridad cuando el gestor lo permite. |
+| **SVR-HAR-05** | Detecta `ufw`, `firewalld`, `nftables` o `iptables`, verifica si está activo y si la política default es deny. |
+| **SVR-HAR-08** | Comprueba permisos de `/etc/shadow`, `/etc/sudoers`, claves SSH del host, `authorized_keys` de root contra la línea base CIS §6.1–6.2. |
+| **SVR-HAR-10** | Verifica si `auditd` está activo; usa `systemd-journald` como fallback. |
+| **SVR-MON-01** | Inventaria logs en `/var/log` y comprueba si hay `logrotate` configurado. |
+
+### Cuándo activarlo
+
+- ✅ Pipeline CI/CD que corre **on the staging host** (Jenkins agent, GitHub Actions self-hosted runner sobre el servidor).
+- ✅ Auditoría manual conectado por SSH al servidor de staging.
+- ❌ **No** desde tu laptop apuntando a un staging remoto — leería tu laptop, no el servidor.
+
+Si lo activas accidentalmente desde una máquina equivocada, el banner amarillo del HTML te advierte que los resultados describen al evaluador, no al objetivo.
+
+---
+
+## Modo remoto SSH: `--ssh-target` (pensado para CI/CD)
+
+Mismas verificaciones que `--local-host-scan` pero ejecutadas contra un host remoto vía SSH. Pensado para pipelines de CI/CD que NO corren sobre el propio servidor de staging.
+
+```bash
+# Llave en disco
+./staging-shield scan \
+  --config staging.yaml \
+  --ssh-target staging-shield@staging.miempresa.com \
+  --ssh-key ~/.ssh/staging-shield-key \
+  --ssh-sudo
+
+# Llave desde variable de entorno (patrón CI/CD)
+export STAGING_SHIELD_SSH_KEY="$(cat ~/.ssh/staging-shield-key)"
+./staging-shield scan \
+  --config staging.yaml \
+  --ssh-target staging-shield@staging.miempresa.com \
+  --ssh-sudo
+```
+
+Cómo funciona: el cliente abre una sesión SSH usando el binario `ssh` del sistema. Para cada comando que necesita ejecutar remotamente (apt list, ufw status, etc.), abre una conexión, ejecuta el comando, lee la salida, cierra. Igual para lectura de archivos (`cat` remoto) y `stat`. La evidencia recopilada se almacena en los mismos campos que el modo local, y los validadores no necesitan saber qué modo se usó.
+
+**Configuración del host objetivo:** ver [`docs/host-setup.md`](docs/host-setup.md). En resumen: crear un usuario dedicado `staging-shield`, autorizar la llave pública con `from=` para restringir el origen, y dar `sudo NOPASSWD` **solo** a los 6-8 comandos específicos que el cliente necesita. **NO** se otorga sudo total.
+
+### Integración con CI/CD
+
+#### GitHub Actions
+
+El proyecto incluye un workflow listo en `.github/workflows/staging-shield.yml`. Configurar tres secrets (`Settings → Secrets and variables → Actions`):
+
+| Secret | Valor |
+|--------|-------|
+| `STAGING_SSH_KEY` | Contenido completo de la llave privada (incluyendo `-----BEGIN...-----` y `-----END...-----`). |
+| `STAGING_SSH_TARGET` | `staging-shield@<host>`. |
+| `STAGING_DOMAIN` | (opcional) Dominio público del entorno. |
+
+El workflow corre en cada push a `main`, en cada PR, semanalmente (cron), y bajo demanda (workflow_dispatch). En PRs deja un comentario con el Security Score y los scores por dominio. Si alguna SVR crítica falla (`--fail-on-noapt`), el job falla y bloquea el merge.
+
+El reporte HTML completo queda como artifact descargable de cada corrida durante 30 días.
+
+#### GitLab CI
+
+```yaml
+staging-scan:
+  image: golang:1.21
+  variables:
+    STAGING_SHIELD_SSH_KEY: $STAGING_SSH_KEY_VAR  # var del proyecto, masked
+  script:
+    - go build -o staging-shield
+    - ./staging-shield scan
+        --config examples/config.yaml
+        --ssh-target "$STAGING_SSH_TARGET"
+        --ssh-sudo
+        --html-out staging-shield-report.html
+        --fail-on-noapt
+  artifacts:
+    paths: [staging-shield-report.html]
+    expire_in: 30 days
+    when: always
+```
+
+#### Jenkins
+
+Usar `withCredentials([sshUserPrivateKey(...)])` para inyectar la llave como archivo temporal y pasarla con `--ssh-key`. Ejemplo completo en `docs/host-setup.md`.
+
+### Modelo de seguridad del modo SSH
+
+| Riesgo | Mitigación incorporada |
+|--------|----------------------|
+| Llave en logs del CI | El cliente la escribe a temp file 0600. El secret se enmascara en logs de GitHub Actions/GitLab. Nunca se imprime. |
+| Comando arbitrario vía sudo | sudoers con paths absolutos y argumentos exactos. El cliente quotea cada arg con `'...'` para evitar inyección. |
+| MITM en primera conexión | `StrictHostKeyChecking=accept-new`: acepta primera conexión, rechaza si la llave del host cambia después. |
+| Llave comprometida | `from=` en `authorized_keys` restringe origen. Sudo limitado a los comandos del escáner. Recomendación: rotar cada 90 días. |
+| Lectura del repo desde el host | El cliente NUNCA copia archivos del repo al host remoto. El escaneo de secretos corre 100% en el runner del CI. |
 
 ---
 

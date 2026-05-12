@@ -170,6 +170,34 @@ type EvalContext struct {
 	ProductionRefs  []string // IPs/hosts de producción para validar aislamiento
 	AdminInterfaces []string // rutas/puertos administrativos esperados
 
+	// LocalHostScan activa verificaciones invasivas sobre el host LOCAL donde
+	// se ejecuta el cliente. Cuando es true (vía --local-host-scan o
+	// local_host_scan: true en YAML), el módulo de descubrimiento ejecuta
+	// comandos como `dpkg --list`, `systemctl list-units`, `ss -tlnp`,
+	// `ufw status`, `journalctl`, lee /etc/ssh/sshd_config y permisos de
+	// archivos sensibles, todo SOBRE EL EQUIPO DEL EVALUADOR (nunca sobre
+	// hosts remotos). Habilita la verificación automática de varias reglas
+	// de hardening que de otro modo quedan en "manual".
+	//
+	// El usuario debe activarla explícitamente porque:
+	//   1. Lee información sensible del sistema (lista de paquetes, usuarios,
+	//      configuración de SSH) que no es necesaria en un scan estándar.
+	//   2. Solo tiene sentido cuando el equipo donde corre el cliente ES el
+	//      host de staging (típico en CI/CD o evaluación local del servidor).
+	//      Si se corre desde una laptop apuntando a un staging remoto, los
+	//      resultados describen la laptop, no el servidor.
+	LocalHostScan bool
+
+	// SSHTarget activa el modo remoto: el cliente abre una sesión SSH al
+	// host indicado (user@host) y ejecuta sobre él los mismos chequeos del
+	// modo invasivo. SSHTarget vacío significa modo desactivado.
+	// Pensado primariamente para CI/CD: las credenciales (llave privada)
+	// se pasan vía secret del CI y nunca se persisten.
+	SSHTarget  string
+	SSHPort    int    // 0 -> 22 default
+	SSHKeyPath string // ruta a llave privada; vacío usa agente ssh-agent o ~/.ssh
+	SSHUseSudo bool   // prefijar con `sudo -n` los comandos privilegiados
+
 	// Resultados de descubrimiento
 	Discovery DiscoveryData
 
@@ -205,6 +233,76 @@ type DiscoveryData struct {
 	// SVR-IAM-07 depende del estado de tracking de cada archivo y no del
 	// contenido por sí solo.
 	EnvFiles []EnvFileFinding `json:"env_files"`
+
+	// LocalHost contiene los resultados de las verificaciones invasivas
+	// sobre el host LOCAL del evaluador. Solo se rellena cuando el usuario
+	// activó --local-host-scan. Si está vacío, todos los validadores que
+	// dependen de él caen al comportamiento previo (manual/falta-evidencia).
+	LocalHost LocalHostData `json:"local_host"`
+}
+
+// LocalHostData agrupa la evidencia recopilada por las verificaciones del
+// modo invasivo. Todos los campos son opt-in: si LocalHostScan=false en el
+// contexto, esta struct queda en cero y los validadores se comportan como
+// antes (devuelven StatusManualRequerido o StatusFaltaEvidencia).
+type LocalHostData struct {
+	// Available indica si se ejecutaron las verificaciones. Cuando es false
+	// los validadores deben asumir que el modo no se activó y no fallar
+	// silenciosamente.
+	Available bool `json:"available"`
+
+	// Mode indica cómo se obtuvo la evidencia: "local-host" (el cliente
+	// corre EN el host inspeccionado) o "ssh" (el cliente abrió una sesión
+	// SSH contra un host remoto). El reporte HTML lo usa para mostrar
+	// claramente qué tan reciente es la evidencia y de qué máquina vino.
+	Mode      string `json:"mode,omitempty"`
+	HostLabel string `json:"host_label,omitempty"` // p.ej. "este equipo (linux)" o "deploy@10.0.0.5"
+
+	// OS describe el sistema operativo donde corre el cliente.
+	OS        string   `json:"os,omitempty"`         // linux, darwin, windows
+	OSVersion string   `json:"os_version,omitempty"` // e.g. "Ubuntu 22.04.4 LTS"
+	Kernel    string   `json:"kernel,omitempty"`     // uname -r
+	Errors    []string `json:"errors,omitempty"`     // mensajes de las comprobaciones que no pudieron ejecutarse
+
+	// HAR-04: estado de parches.
+	// PackagesOutdated cuenta los paquetes con actualización disponible.
+	// SecurityUpdatesPending cuenta los marcados como actualización de
+	// seguridad por el gestor de paquetes (apt) cuando es discernible.
+	PackagesOutdated       int    `json:"packages_outdated,omitempty"`
+	SecurityUpdatesPending int    `json:"security_updates_pending,omitempty"`
+	PackagesCheckedAt      string `json:"packages_checked_at,omitempty"` // edad del cache de apt
+	PackagesError          string `json:"packages_error,omitempty"`
+
+	// HAR-05: firewall local.
+	FirewallActive      bool   `json:"firewall_active"`
+	FirewallTool        string `json:"firewall_tool,omitempty"` // ufw, firewalld, iptables, nftables, none
+	FirewallRulesCount  int    `json:"firewall_rules_count,omitempty"`
+	FirewallDefaultDeny bool   `json:"firewall_default_deny,omitempty"`
+
+	// HAR-08: permisos en archivos sensibles.
+	// Cada entrada describe un path inseguro encontrado (permisos
+	// mundo-legibles sobre archivos que no deberían serlo).
+	SensitiveFiles []SensitiveFileFinding `json:"sensitive_files,omitempty"`
+
+	// HAR-10 / MON-01: configuración de auditoría y logs.
+	AuditdActive bool     `json:"auditd_active"`
+	AuditError   string   `json:"audit_error,omitempty"`
+	LogsPresent  []string `json:"logs_present,omitempty"`  // archivos de log con tamaño > 0 en /var/log
+	LogsRotating bool     `json:"logs_rotating,omitempty"` // existe logrotate.conf con reglas activas
+
+	// SSH: complemento de SVR-HAR-03 cuando el host es local.
+	SSHConfigPath   string `json:"ssh_config_path,omitempty"`
+	SSHPermitRoot   string `json:"ssh_permit_root,omitempty"`   // valor crudo: "yes", "no", "prohibit-password", "without-password" o ""
+	SSHPasswordAuth string `json:"ssh_password_auth,omitempty"` // "yes" / "no"
+	SSHPubkeyAuth   string `json:"ssh_pubkey_auth,omitempty"`
+}
+
+// SensitiveFileFinding describe un archivo sensible con permisos laxos.
+type SensitiveFileFinding struct {
+	Path    string `json:"path"`
+	Mode    string `json:"mode"` // p.ej. "0644", "0777"
+	Owner   string `json:"owner,omitempty"`
+	Problem string `json:"problem"` // descripción legible: "lectura mundo permitida en clave privada"
 }
 
 // GitContext describe el estado del repositorio frente a git. Cuando el
@@ -266,10 +364,26 @@ type SecretFinding struct {
 	// validadores deben usar la heurística previa (presencia en disco).
 	Tracked   bool `json:"tracked"`
 	InHistory bool `json:"in_history"`
+	// IsFixture marca hallazgos en archivos de test, ejemplos o fixtures.
+	// Estos NO penalizan SVR-IAM-04 porque corresponden a cadenas de prueba
+	// (e.g. "Bearer invalid-token-for-test"), no a secretos reales filtrados.
+	// Se reportan en una sección aparte del HTML para transparencia.
+	IsFixture bool `json:"is_fixture,omitempty"`
 }
 
 // AdminFinding describe un punto administrativo expuesto.
 type AdminFinding struct {
 	Port        int    `json:"port"`
 	Description string `json:"description"`
+	// Resultado del probe HTTP/HTTPS opcional sobre la interface admin.
+	// Probed=true si pudimos hacer una petición; HTTPStatus es el código
+	// de respuesta. AuthChallenge=true si la respuesta fue 401/403/407 o
+	// trajo header WWW-Authenticate, lo que indica que el endpoint pide
+	// credenciales antes de servir contenido.
+	// Estos campos los usa SVR-IAM-08 para dictaminar automáticamente si
+	// el acceso externo a recursos internos está asociado a identidades.
+	Probed        bool   `json:"probed,omitempty"`
+	HTTPStatus    int    `json:"http_status,omitempty"`
+	AuthChallenge bool   `json:"auth_challenge,omitempty"`
+	ProbeError    string `json:"probe_error,omitempty"`
 }

@@ -1,0 +1,131 @@
+# =============================================================================
+# Staging Shield - GitHub Actions workflow
+# =============================================================================
+# Evalúa la postura de seguridad del entorno de staging en cada push a main y
+# en cada PR. Usa el modo remoto SSH para automatizar las verificaciones de
+# hardening (paquetes, firewall, permisos, auditd, sshd_config) que de otro
+# modo quedarían en revisión manual.
+#
+# Configuración previa (en Settings → Secrets and variables → Actions):
+#   - STAGING_SSH_KEY:    contenido completo de la llave privada SSH
+#                         (incluyendo las líneas BEGIN/END).
+#   - STAGING_SSH_TARGET: user@host del servidor de staging
+#                         (ej: deploy@staging.miempresa.com).
+#   - STAGING_DOMAIN:     dominio público del entorno (opcional, sino se
+#                         deriva de STAGING_SSH_TARGET).
+#
+# El reporte HTML queda como artifact descargable de cada corrida.
+# Si el entorno queda "no apto" (alguna SVR crítica falla), el job falla
+# y bloquea el merge.
+# =============================================================================
+
+name: Staging Shield - Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Permite ejecutar manualmente desde la UI de GitHub.
+  workflow_dispatch:
+  # Corrida programada semanal para detectar drift de configuración (parches
+  # nuevos disponibles, certificados próximos a vencer, etc.).
+  schedule:
+    - cron: '0 6 * * 1' # lunes 6 AM UTC
+
+jobs:
+  scan:
+    name: Evaluar seguridad de staging
+    runs-on: ubuntu-latest
+    # Permisos mínimos: solo necesitamos leer el repo y subir el reporte
+    # como artifact. No escribimos a issues, PRs ni releases.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 nos permite que la detección de secretos consulte
+          # el historial git completo (SVR-IAM-04 valida si hay credenciales
+          # en commits previos aunque ya no estén en el HEAD).
+          fetch-depth: 0
+
+      - name: Instalar Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Compilar staging-shield
+        run: |
+          go build -o staging-shield
+          ./staging-shield version
+
+      - name: Ejecutar scan
+        # Modo remoto SSH: el binario abre una sesión contra staging y corre
+        # los chequeos invasivos sobre EL host de staging, no sobre el runner
+        # de GitHub Actions.
+        env:
+          # GitHub Actions inyecta el contenido del secret como variable.
+          # El cliente la materializa a un archivo temp 0600 antes de invocar ssh.
+          STAGING_SHIELD_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          ./staging-shield scan \
+            --config examples/config.yaml \
+            --ssh-target "${{ secrets.STAGING_SSH_TARGET }}" \
+            --ssh-sudo \
+            --html-out staging-shield-report.html \
+            --json-out staging-shield-report.json \
+            --fail-on-noapt \
+            --verbose
+
+      - name: Subir reporte HTML
+        # Se ejecuta incluso si el scan falló (fail-on-noapt rompe el step
+        # anterior), porque queremos ver POR QUÉ falló.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-shield-report-${{ github.run_number }}
+          path: |
+            staging-shield-report.html
+            staging-shield-report.json
+          retention-days: 30
+
+      - name: Comentar resumen en el PR
+        # Solo aplica a PRs y solo cuando el scan terminó (con o sin éxito).
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let json;
+            try {
+              json = JSON.parse(fs.readFileSync('staging-shield-report.json', 'utf8'));
+            } catch (e) {
+              console.log('Reporte JSON no disponible:', e.message);
+              return;
+            }
+            const stats = json.stats || {};
+            const apto = stats.apto ? '✅ APTO' : '❌ NO APTO';
+            const score = (stats.global_score || 0).toFixed(1);
+            const body = [
+              `## Staging Shield: ${apto}`,
+              ``,
+              `**Security Score Global:** ${score} / 100`,
+              `**Cobertura automática:** ${(stats.coverage_auto || 0).toFixed(1)}%`,
+              ``,
+              `### Score por dominio`,
+              `| Dominio | Score |`,
+              `|---------|-------|`,
+              ...Object.entries(stats.domain_scores || {}).map(
+                ([d, s]) => `| ${d} | ${s.toFixed(1)} |`
+              ),
+              ``,
+              `Reporte HTML completo: descargue el artifact \`staging-shield-report-${{ github.run_number }}\` de esta corrida.`
+            ].join('\n');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });

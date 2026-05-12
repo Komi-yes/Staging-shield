@@ -42,6 +42,27 @@ type FileConfig struct {
 	} `yaml:"production"`
 
 	AdminInterfaces []string `yaml:"admin_interfaces"`
+
+	// LocalHostScan activa el modo invasivo de verificación local. Solo
+	// inspecciona el host donde corre el cliente, NUNCA hosts remotos.
+	// Lee paquetes, configuración de SSH, firewall local, permisos de
+	// archivos sensibles, etc. Solo tiene sentido activarlo cuando el
+	// equipo donde corre el cliente ES el host de staging (típico en
+	// despliegues self-hosted o pipelines CI/CD que corren ON el servidor).
+	LocalHostScan bool `yaml:"local_host_scan"`
+
+	// SSH activa el modo remoto: los mismos chequeos del modo invasivo
+	// pero ejecutados contra un host remoto via SSH. Pensado para CI/CD
+	// que corre en otra máquina distinta del servidor de staging.
+	// Para configurar la llave privada se prefiere la variable de entorno
+	// STAGING_SHIELD_SSH_KEY (contenido de la llave) en vez del YAML, para
+	// no commitear secretos al repositorio.
+	SSH struct {
+		Target  string `yaml:"target"`   // user@host
+		Port    int    `yaml:"port"`     // 22 default
+		KeyPath string `yaml:"key_path"` // ruta a llave; preferir STAGING_SHIELD_SSH_KEY
+		UseSudo bool   `yaml:"use_sudo"` // sudo -n para comandos privilegiados
+	} `yaml:"ssh"`
 }
 
 // Load lee y valida un archivo YAML, devolviendo un EvalContext listo para
@@ -125,6 +146,11 @@ func Build(fc FileConfig) (*context.EvalContext, error) {
 		RepoPath:        fc.Repository.Path,
 		ProductionRefs:  fc.Production.References,
 		AdminInterfaces: fc.AdminInterfaces,
+		LocalHostScan:   fc.LocalHostScan,
+		SSHTarget:       fc.SSH.Target,
+		SSHPort:         fc.SSH.Port,
+		SSHKeyPath:      fc.SSH.KeyPath,
+		SSHUseSudo:      fc.SSH.UseSudo,
 	}
 	return ec, nil
 }

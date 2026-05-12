@@ -39,6 +39,7 @@ func Run(ec *ctx.EvalContext, verbose bool) {
 	probeTLS(ec, log)
 	probeHTTP(ec, log)
 	checkAdminExposure(ec, log)
+	probeAdminEndpoints(ec, log)
 	checkLegacyServices(ec, log)
 	checkProductionReachability(ec, log)
 	// Importante: gatherGitContext debe correr antes que scanSecrets para
@@ -46,6 +47,24 @@ func Run(ec *ctx.EvalContext, verbose bool) {
 	gatherGitContext(ec, log)
 	scanSecrets(ec, log)
 	scanEnvFiles(ec, log)
+
+	// Modo invasivo opt-in. Solo lee información sobre el host LOCAL donde
+	// corre el cliente. Si el usuario no lo activó, salta esta fase entera
+	// y los validadores de hardening de host devuelven su comportamiento
+	// previo (manual / falta de evidencia).
+	//
+	// Si el usuario en cambio especificó --ssh-target, las verificaciones se
+	// hacen contra el host remoto vía SSH. Ambos modos son mutuamente
+	// excluyentes; si están ambos activos, --ssh-target gana (es más
+	// específico) y advertimos.
+	if ec.SSHTarget != "" {
+		if ec.LocalHostScan {
+			log("Aviso: --local-host-scan y --ssh-target activos simultáneamente. Usando --ssh-target.")
+		}
+		runRemoteHostChecks(ec, log)
+	} else if ec.LocalHostScan {
+		runLocalHostChecks(ec, log)
+	}
 
 	log("Descubrimiento completado")
 }
@@ -359,6 +378,111 @@ func checkAdminExposure(ec *ctx.EvalContext, log func(string, ...interface{})) {
 	}
 }
 
+// probeAdminEndpoints intenta una petición HEAD/GET sobre cada interfaz
+// administrativa detectada para clasificar su comportamiento de
+// autenticación. Esto convierte SVR-IAM-08 en automática: ya no requiere
+// revisión humana en el caso común de paneles web (el más frecuente).
+//
+// Se considera AuthChallenge=true si:
+//   - El status es 401, 403 o 407 (código clásico de "necesita credenciales").
+//   - La respuesta trae header WWW-Authenticate (Basic/Bearer/Digest/etc).
+//   - Hay redirect a una página de login (3xx + Location con "login"/"signin"/"auth").
+//
+// Se considera AuthChallenge=false si:
+//   - Status 200/204/206 sin redirect a login y sin WWW-Authenticate.
+//   - El servidor sirve contenido directamente.
+//
+// Para puertos no-HTTP (SSH=22, RDP=3389, DB=5432/3306/27017, Docker=2375,
+// etc.) no se prueba HTTP — esos protocolos tienen su propia lógica de
+// autenticación que el cliente no puede inspeccionar de forma genérica, y
+// la mera existencia del puerto abierto a internet ya lo reporta NET-08.
+// Para esos casos se deja AuthChallenge=false (asumimos exposición sin
+// validación visible) para que IAM-08 los marque como riesgosos por defecto.
+func probeAdminEndpoints(ec *ctx.EvalContext, log func(string, ...interface{})) {
+	if len(ec.Discovery.AdminExposed) == 0 {
+		return
+	}
+	host := strings.TrimSpace(ec.Target)
+	if host == "" {
+		host = ec.IPAddress
+	}
+	if host == "" {
+		return
+	}
+
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	// Puertos típicamente HTTP/HTTPS donde el probe tiene sentido.
+	httpPorts := map[int]bool{
+		80: true, 443: true, 8080: true, 8443: true,
+		9090: true, 9091: true, 9100: true, 9200: true,
+		15672: true,                         // RabbitMQ admin
+		8888:  true, 8000: true, 5601: true, // Kibana
+		3000: true, 4000: true, // Grafana / dashboards
+	}
+
+	for i, af := range ec.Discovery.AdminExposed {
+		if !httpPorts[af.Port] {
+			ec.Discovery.AdminExposed[i].Probed = true
+			ec.Discovery.AdminExposed[i].AuthChallenge = false
+			ec.Discovery.AdminExposed[i].ProbeError = "puerto no-HTTP, validación de autenticación fuera de alcance del cliente"
+			continue
+		}
+
+		// Probar HTTPS primero, después HTTP plano.
+		schemes := []string{"https", "http"}
+		if af.Port == 80 || af.Port == 8080 || af.Port == 8000 || af.Port == 3000 || af.Port == 4000 {
+			schemes = []string{"http", "https"}
+		}
+		probed := false
+		for _, sch := range schemes {
+			url := fmt.Sprintf("%s://%s:%d/", sch, host, af.Port)
+			log("Probando interfaz admin %s", url)
+			req, _ := http.NewRequest("GET", url, nil)
+			req.Header.Set("User-Agent", "StagingShield/1.0")
+			resp, err := client.Do(req)
+			if err != nil {
+				ec.Discovery.AdminExposed[i].ProbeError = err.Error()
+				continue
+			}
+			ec.Discovery.AdminExposed[i].Probed = true
+			ec.Discovery.AdminExposed[i].HTTPStatus = resp.StatusCode
+
+			authChallenge := false
+			if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 407 {
+				authChallenge = true
+			}
+			if v := resp.Header.Get("WWW-Authenticate"); v != "" {
+				authChallenge = true
+			}
+			if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+				loc := strings.ToLower(resp.Header.Get("Location"))
+				if strings.Contains(loc, "login") || strings.Contains(loc, "signin") ||
+					strings.Contains(loc, "auth") || strings.Contains(loc, "sso") {
+					authChallenge = true
+				}
+			}
+			ec.Discovery.AdminExposed[i].AuthChallenge = authChallenge
+			resp.Body.Close()
+			probed = true
+			break
+		}
+		if !probed {
+			// Fallo total: ambos schemes dieron error. Lo dejamos como
+			// no probado y IAM-08 lo reportará como falta de evidencia.
+			ec.Discovery.AdminExposed[i].Probed = false
+		}
+	}
+}
+
 // -------------------------- Servicios heredados --------------------------
 
 func checkLegacyServices(ec *ctx.EvalContext, log func(string, ...interface{})) {
@@ -422,13 +546,90 @@ var secretPatterns = []struct {
 	{"GitHub Token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`), "alto"},
 	{"Slack Token", regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{10,48}`), "alto"},
 	{"Generic API Key", regexp.MustCompile(`(?i)(api[-_]?key|apikey|secret[-_]?key)[\s:="']+([A-Za-z0-9_\-]{20,})`), "medio"},
-	{"Bearer Token", regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{20,}`), "medio"},
+	// Bearer tokens: opaque tokens reales suelen ser de 32+ chars y JWTs son >100.
+	// Subir el mínimo de 20 a 32 elimina casos como "Bearer invalid-token-for-test"
+	// (22 chars) sin perder tokens reales. Ver fixtureMatchValues() para el filtro
+	// adicional de palabras placeholder.
+	{"Bearer Token", regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{32,}`), "medio"},
 	{"Private Key Block", regexp.MustCompile(`-----BEGIN ((RSA|DSA|EC|OPENSSH|PGP) )?PRIVATE KEY-----`), "alto"},
 	{"Postgres URL", regexp.MustCompile(`postgres(?:ql)?://[^:\s]+:[^@\s]+@[^/\s]+`), "alto"},
 	{"MySQL URL", regexp.MustCompile(`mysql://[^:\s]+:[^@\s]+@[^/\s]+`), "alto"},
 	{"MongoDB URL", regexp.MustCompile(`mongodb(\+srv)?://[^:\s]+:[^@\s]+@[^/\s]+`), "alto"},
 	{"JWT", regexp.MustCompile(`eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}`), "medio"},
 	{"Password Assignment", regexp.MustCompile(`(?i)(password|passwd|pwd)[\s:="']+([^"'\s]{6,})`), "medio"},
+}
+
+// testPathFragments son fragmentos de ruta que indican código de test/fixture.
+// Cuando el archivo escaneado está bajo cualquiera de estos directorios el
+// hallazgo se marca como "fixture" y NO penaliza SVR-IAM-04. Esto evita el
+// falso positivo histórico donde un literal como "Bearer invalid-token-for-test"
+// dentro de un archivo .test.js disparaba alerta.
+var testPathFragments = []string{
+	"/test/", "/tests/", "/__tests__/", "/__test__/",
+	"/spec/", "/specs/", "/__specs__/",
+	"/e2e/", "/integration/", "/cypress/", "/playwright/",
+	"/fixtures/", "/fixture/", "/__fixtures__/",
+	"/mocks/", "/__mocks__/",
+	"/testdata/", "/test-data/",
+	"/examples/", "/example/", "/samples/",
+}
+
+// testFileSuffixes son patrones de nombre de archivo que indican test.
+// Se evalúan sobre el nombre solo (no la ruta completa). El match es por
+// substring case-insensitive: si el nombre contiene cualquier de estos
+// fragmentos se considera test fixture.
+var testFileSuffixes = []string{
+	".test.", ".spec.",
+	"_test.", "_spec.",
+	".tests.", ".specs.",
+	"-test.", "-spec.",
+}
+
+// placeholderTokens son palabras que, presentes dentro del valor matcheado por
+// una regex de secreto, indican placeholder o dato de demostración y NO un
+// secreto real. Se comparan en lowercase.
+var placeholderTokens = []string{
+	"invalid", "fake", "dummy", "example", "placeholder",
+	"sample", "demo", "test", "mock", "stub",
+	"replace", "your-", "your_", "yourtoken", "yourapikey",
+	"changeme", "change-me", "change_me",
+	"xxxx", "yyyy", "zzzz",
+	"<token>", "<key>", "<secret>", "<password>",
+	"todo", "fixme", "lorem",
+	"abc123", "1234567890",
+}
+
+// isTestFixturePath devuelve true si el archivo en relPath debe tratarse como
+// fixture/test y los hallazgos en él NO penalizan IAM-04.
+// La ruta se normaliza a slash-forward para que el matcheo sea estable entre
+// Windows ("test\\foo.js") y Linux ("test/foo.js").
+func isTestFixturePath(relPath string) bool {
+	norm := "/" + strings.ReplaceAll(relPath, "\\", "/")
+	low := strings.ToLower(norm)
+	for _, f := range testPathFragments {
+		if strings.Contains(low, f) {
+			return true
+		}
+	}
+	base := strings.ToLower(filepath.Base(relPath))
+	for _, sfx := range testFileSuffixes {
+		if strings.Contains(base, sfx) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikePlaceholder devuelve true si el valor matcheado contiene una palabra
+// indicativa de placeholder o demo (e.g. "Bearer invalid-token-for-test").
+func looksLikePlaceholder(match string) bool {
+	low := strings.ToLower(match)
+	for _, tok := range placeholderTokens {
+		if strings.Contains(low, tok) {
+			return true
+		}
+	}
+	return false
 }
 
 // extsScanned define las extensiones que se inspeccionan para secretos.
@@ -506,6 +707,11 @@ func scanSecrets(ec *ctx.EvalContext, log func(string, ...interface{})) {
 		}
 		rel, _ := filepath.Rel(ec.RepoPath, path)
 		relNorm := normalizeRel(rel)
+		// Marcamos el archivo entero como fixture si está bajo test/, fixtures/,
+		// examples/, etc. Así cada match heredado de él sale con IsFixture=true
+		// y el validador IAM-04 puede excluirlos del cálculo punitivo, dejándolos
+		// solo informativos.
+		fileIsFixture := isTestFixturePath(rel)
 
 		// Procesar línea por línea para reportar línea exacta
 		lines := strings.Split(string(data), "\n")
@@ -513,6 +719,11 @@ func scanSecrets(ec *ctx.EvalContext, log func(string, ...interface{})) {
 			for _, pat := range secretPatterns {
 				if loc := pat.Re.FindStringIndex(line); loc != nil {
 					match := line[loc[0]:loc[1]]
+					// Filtro adicional: incluso si el archivo no está en una
+					// ruta de test, un literal con palabras "invalid", "fake",
+					// "your-token-here", etc. dentro del valor matcheado es
+					// señal fuerte de placeholder.
+					isFixture := fileIsFixture || looksLikePlaceholder(match)
 					match = redactSecret(match)
 					ec.Discovery.SecretFindings = append(ec.Discovery.SecretFindings, ctx.SecretFinding{
 						File:      rel,
@@ -522,6 +733,7 @@ func scanSecrets(ec *ctx.EvalContext, log func(string, ...interface{})) {
 						Severity:  pat.Severity,
 						Tracked:   tracked[relNorm],
 						InHistory: inHistory[relNorm],
+						IsFixture: isFixture,
 					})
 				}
 			}
@@ -530,7 +742,16 @@ func scanSecrets(ec *ctx.EvalContext, log func(string, ...interface{})) {
 	})
 
 	if len(ec.Discovery.SecretFindings) > 0 {
-		log("Hallazgos de secretos: %d", len(ec.Discovery.SecretFindings))
+		realCount := 0
+		fixtureCount := 0
+		for _, f := range ec.Discovery.SecretFindings {
+			if f.IsFixture {
+				fixtureCount++
+			} else {
+				realCount++
+			}
+		}
+		log("Hallazgos de secretos: %d reales, %d en archivos de test/ejemplo (no penalizan)", realCount, fixtureCount)
 	}
 }
 

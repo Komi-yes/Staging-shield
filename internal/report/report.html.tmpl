@@ -356,7 +356,15 @@
     <span><strong>Objetivo:</strong> {{.Env.Target}}</span>
     {{if .Env.IPAddress}}<span><strong>IP:</strong> {{.Env.IPAddress}}</span>{{end}}
     <span><strong>Evaluado:</strong> {{.Env.Timestamp.Format "2006-01-02 15:04:05"}}</span>
+    {{if .Env.SSHTarget}}<span class="pill" style="background:rgba(210,153,34,0.25); color:var(--warn); border-color:var(--warn);">Modo remoto SSH: {{.Env.SSHTarget}}</span>
+    {{else if .Env.LocalHostScan}}<span class="pill" style="background:rgba(210,153,34,0.25); color:var(--warn); border-color:var(--warn);">Modo invasivo: --local-host-scan</span>{{end}}
   </div>
+  {{if or .Env.LocalHostScan .Env.SSHTarget}}
+  <div style="margin-top: 12px; padding: 10px 14px; border-left: 3px solid var(--warn); background: rgba(210,153,34,0.08); font-size: 13px; color: var(--text-dim);">
+    <strong style="color: var(--warn);">{{if .Env.SSHTarget}}Modo remoto SSH activado.{{else}}Modo invasivo activado.{{end}}</strong>
+    Este reporte incluye verificaciones automáticas adicionales (SVR-HAR-03 con sshd_config, HAR-04 paquetes, HAR-05 firewall, HAR-08 permisos, HAR-10 auditoría, MON-01 logs) basadas en {{if .Env.SSHTarget}}una sesión SSH contra <code>{{.Env.SSHTarget}}</code>{{else}}inspección directa del host donde corrió el cliente{{end}}. {{if .Env.LocalHostScan}}Si ese host NO es el servidor de staging, ignore los resultados de estas reglas — describen la máquina del evaluador, no el entorno objetivo.{{end}}
+  </div>
+  {{end}}
 </header>
 
 <div class="grid">
@@ -627,14 +635,16 @@
 
   {{if .Discovery.Secrets}}
   <details open>
-    <summary>Secretos detectados en repositorio ({{.SecretsCount}}, {{.HighSecrets}} de severidad alta · {{.TrackedSecrets}} en archivos públicos)</summary>
+    <summary>Secretos detectados en repositorio ({{.SecretsCount}} totales · {{.RealSecretsCount}} reales · {{.FixtureSecretsCount}} en tests/ejemplos · {{.HighSecrets}} severidad alta · {{.TrackedSecrets}} en archivos públicos)</summary>
     <p style="color: var(--text-dim); margin: 8px 0 8px; font-size: 12px;">
-      La columna "Exposición" indica si el archivo está actualmente trackeado por git, presente en su historial, o solo es local del evaluador. Solo los hallazgos en archivos trackeados o en historial penalizan SVR-IAM-04.
+      La columna <strong>Exposición</strong> indica si el archivo está actualmente trackeado por git, presente en su historial, o solo es local del evaluador.
+      La columna <strong>Tipo</strong> distingue hallazgos reales de los detectados en archivos de test/ejemplo (rutas con <code>test/</code>, <code>fixtures/</code>, sufijos <code>.test.</code>/<code>.spec.</code>, o valores con palabras como "invalid", "fake", "your-token-here").
+      Solo los hallazgos <strong>reales</strong> en archivos trackeados o en historial penalizan SVR-IAM-04.
     </p>
     <table class="discovery-table">
-      <tr><th>Archivo</th><th>Línea</th><th>Patrón</th><th>Severidad</th><th>Exposición</th><th>Match (redactado)</th></tr>
+      <tr><th>Archivo</th><th>Línea</th><th>Patrón</th><th>Severidad</th><th>Exposición</th><th>Tipo</th><th>Match (redactado)</th></tr>
       {{range .Discovery.Secrets}}
-      <tr>
+      <tr{{if .IsFixture}} style="opacity: 0.55"{{end}}>
         <td><code>{{.File}}</code></td>
         <td>{{.Line}}</td>
         <td>{{.Pattern}}</td>
@@ -643,6 +653,10 @@
           {{if .Tracked}}<span class="env-state-tag tracked">trackeado</span>
           {{else if .InHistory}}<span class="env-state-tag history">en historial</span>
           {{else}}<span class="env-state-tag gitignored">solo local</span>{{end}}
+        </td>
+        <td>
+          {{if .IsFixture}}<span class="env-state-tag gitignored">test/ejemplo</span>
+          {{else}}<span class="env-state-tag tracked">real</span>{{end}}
         </td>
         <td><code>{{.Match}}</code></td>
       </tr>
@@ -678,6 +692,70 @@
       </tr>
       {{end}}
     </table>
+  </details>
+  {{end}}
+
+  {{if .Discovery.LocalHost.Available}}
+  <details open>
+    <summary>Verificaciones del modo invasivo ({{if eq .Discovery.LocalHost.Mode "ssh"}}--ssh-target{{else}}--local-host-scan{{end}}) — {{if .Discovery.LocalHost.HostLabel}}{{.Discovery.LocalHost.HostLabel}}{{else}}host local del evaluador{{end}}</summary>
+    <p style="color: var(--text-dim); margin: 8px 0 12px; font-size: 12px;">
+      {{if eq .Discovery.LocalHost.Mode "ssh"}}
+        Esta sección se llena cuando el cliente corre con <code>--ssh-target</code>. Abre una sesión SSH contra el host remoto indicado y ejecuta los chequeos sobre él. Toda la información proviene del host remoto, no del equipo donde corrió el cliente.
+      {{else}}
+        Esta sección se llena cuando el cliente corre con <code>--local-host-scan</code>. Inspecciona EL EQUIPO LOCAL donde se ejecuta, NUNCA hosts remotos. Solo tiene sentido cuando este equipo es el propio host de staging (CI/CD, auditoría on-host).
+      {{end}}
+    </p>
+    <table class="discovery-table">
+      <tr><th>Aspecto</th><th>Valor</th></tr>
+      <tr><td>Sistema operativo</td><td>{{.Discovery.LocalHost.OSVersion}} ({{.Discovery.LocalHost.OS}})</td></tr>
+      {{if .Discovery.LocalHost.Kernel}}<tr><td>Kernel</td><td><code>{{.Discovery.LocalHost.Kernel}}</code></td></tr>{{end}}
+      <tr><td>Paquetes desactualizados</td><td>{{.Discovery.LocalHost.PackagesOutdated}} totales · {{.Discovery.LocalHost.SecurityUpdatesPending}} de seguridad {{if .Discovery.LocalHost.PackagesCheckedAt}}({{.Discovery.LocalHost.PackagesCheckedAt}}){{end}}</td></tr>
+      <tr><td>Firewall local</td><td>
+        {{if eq .Discovery.LocalHost.FirewallTool "none"}}
+          <span class="env-state-tag tracked">no detectado</span>
+        {{else if .Discovery.LocalHost.FirewallActive}}
+          <span class="env-state-tag gitignored">{{.Discovery.LocalHost.FirewallTool}} activo</span>
+          con {{.Discovery.LocalHost.FirewallRulesCount}} reglas
+          {{if .Discovery.LocalHost.FirewallDefaultDeny}}<span class="env-state-tag gitignored">default deny</span>{{else}}<span class="env-state-tag notignored">default allow</span>{{end}}
+        {{else}}
+          <span class="env-state-tag tracked">{{.Discovery.LocalHost.FirewallTool}} inactivo</span>
+        {{end}}
+      </td></tr>
+      {{if .Discovery.LocalHost.SSHConfigPath}}
+      <tr><td>SSH config (sshd_config)</td><td>
+        <code>{{.Discovery.LocalHost.SSHConfigPath}}</code> ·
+        PermitRootLogin=<code>{{if .Discovery.LocalHost.SSHPermitRoot}}{{.Discovery.LocalHost.SSHPermitRoot}}{{else}}(default){{end}}</code> ·
+        PasswordAuthentication=<code>{{if .Discovery.LocalHost.SSHPasswordAuth}}{{.Discovery.LocalHost.SSHPasswordAuth}}{{else}}(default){{end}}</code>
+      </td></tr>
+      {{end}}
+      <tr><td>Auditoría</td><td>
+        {{if .Discovery.LocalHost.AuditdActive}}<span class="env-state-tag gitignored">auditd activo</span>{{else}}<span class="env-state-tag tracked">auditd no activo</span>{{end}}
+      </td></tr>
+      {{if .Discovery.LocalHost.LogsPresent}}
+      <tr><td>Logs detectados</td><td>{{range .Discovery.LocalHost.LogsPresent}}<code>{{.}}</code> {{end}}{{if .Discovery.LocalHost.LogsRotating}}<span class="env-state-tag gitignored">logrotate configurado</span>{{end}}</td></tr>
+      {{end}}
+    </table>
+
+    {{if .Discovery.LocalHost.SensitiveFiles}}
+    <h4 style="margin-top: 16px;">Archivos sensibles con permisos laxos</h4>
+    <table class="discovery-table">
+      <tr><th>Archivo</th><th>Permisos</th><th>Problema</th></tr>
+      {{range .Discovery.LocalHost.SensitiveFiles}}
+      <tr>
+        <td><code>{{.Path}}</code></td>
+        <td><code>{{.Mode}}</code></td>
+        <td>{{.Problem}}</td>
+      </tr>
+      {{end}}
+    </table>
+    {{end}}
+
+    {{if .Discovery.LocalHost.Errors}}
+    <h4 style="margin-top: 16px; color: var(--text-dim);">Verificaciones que no pudieron completarse</h4>
+    <ul style="color: var(--text-dim); font-size: 12px;">
+      {{range .Discovery.LocalHost.Errors}}<li>{{.}}</li>{{end}}
+    </ul>
+    {{end}}
   </details>
   {{end}}
 </section>
