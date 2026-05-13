@@ -42,4 +42,5 @@ func init() {
 	rootCmd.AddCommand(scanCmd)
 	rootCmd.AddCommand(historyCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(auditCmd)
 }

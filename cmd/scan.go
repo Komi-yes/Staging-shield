@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/stagingshield/staging-shield/internal/audit"
 	"github.com/stagingshield/staging-shield/internal/config"
 	ctx "github.com/stagingshield/staging-shield/internal/context"
 	"github.com/stagingshield/staging-shield/internal/discovery"
@@ -41,6 +42,7 @@ var (
 	scanSSHKey      string
 	scanSSHPort     int
 	scanSSHSudo     bool
+	scanOperator    string
 )
 
 var scanCmd = &cobra.Command{
@@ -112,6 +114,7 @@ func init() {
 	f.BoolVar(&scanSSHSudo, "ssh-sudo", false,
 		"Prefijar con 'sudo -n' los comandos que requieren privilegios (iptables, lectura de /etc/shadow, etc.). "+
 			"Requiere que la cuenta SSH tenga NOPASSWD configurado para esos comandos en /etc/sudoers.")
+	f.StringVar(&scanOperator, "operator", "", "Identidad del operador para el registro de auditoría (override del autodetect: env STAGING_SHIELD_OPERATOR → git config user.email → usuario del SO)")
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
@@ -120,6 +123,16 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("entrada inválida: %w", err)
 	}
+
+	// Resolver identidad del operador y versión de la herramienta.
+	op := audit.ResolveOperator(scanOperator, ec.RepoPath)
+	tool := audit.ResolveToolInfo()
+	rev := tool.Revision
+	if rev == "" {
+		rev = "—"
+	}
+	fmt.Printf("[audit] Operador=%s (fuente=%s) Versión=%s Revisión=%s\n",
+		op.Name, op.Source, tool.Version, rev)
 
 	if scanVerbose {
 		fmt.Printf("[entrada] Entorno=%s Target=%s IP=%s Repo=%s\n",
@@ -214,10 +227,26 @@ func runScan(cmd *cobra.Command, args []string) error {
 		if histDir == "" {
 			histDir = storage.DefaultDir()
 		}
-		if path, err := storage.Save(histDir, ec, stats); err != nil {
+		if path, err := storage.Save(histDir, ec, stats, op, tool); err != nil {
 			fmt.Fprintf(os.Stderr, "Aviso: no se pudo guardar snapshot (%v)\n", err)
-		} else if scanVerbose {
-			fmt.Printf("[storage] snapshot: %s\n", path)
+		} else {
+			// Print the chain link so the operator can cross-reference it.
+			if snap, readErr := storage.ReadSnapshot(path); readErr == nil {
+				short := func(h string) string {
+					if len(h) >= 12 {
+						return h[:12]
+					}
+					return h
+				}
+				prev := "—"
+				if snap.PrevHash != "" {
+					prev = short(snap.PrevHash)
+				}
+				fmt.Printf("[audit] Snapshot hash=%s prev=%s\n", short(snap.IntegrityHash), prev)
+			}
+			if scanVerbose {
+				fmt.Printf("[storage] snapshot: %s\n", path)
+			}
 		}
 	}
 
@@ -228,7 +257,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		if !strings.HasSuffix(dir, string(os.PathSeparator)) {
 			// tratamos scanJSONHistory como ruta de archivo: usar Save y renombrar es complejo;
 			// más simple: escribir directamente.
-			if err := writeJSONExport(scanJSONHistory, ec, stats); err != nil {
+			if err := writeJSONExport(scanJSONHistory, ec, stats, op, tool); err != nil {
 				fmt.Fprintf(os.Stderr, "Aviso: no se pudo escribir JSON (%v)\n", err)
 			} else {
 				fmt.Printf("📦 Export JSON: %s\n", scanJSONHistory)
@@ -388,11 +417,8 @@ func resolveSSHKeyFromEnv(ec *ctx.EvalContext) error {
 
 // writeJSONExport escribe un export JSON en formato similar al historial pero
 // en una ruta arbitraria (independiente del directorio de historial).
-func writeJSONExport(path string, ec *ctx.EvalContext, stats scoring.Stats) error {
-	// Reutilizamos storage.Save indirectamente: copiamos el snapshot al path indicado.
-	// Como Save genera nombre automático, replicamos la lógica aquí en pequeño.
-	dir := "."
-	tmp, err := storage.Save(os.TempDir(), ec, stats)
+func writeJSONExport(path string, ec *ctx.EvalContext, stats scoring.Stats, op audit.Operator, tool audit.ToolInfo) error {
+	tmp, err := storage.Save(os.TempDir(), ec, stats, op, tool)
 	if err != nil {
 		return err
 	}
@@ -401,6 +427,5 @@ func writeJSONExport(path string, ec *ctx.EvalContext, stats scoring.Stats) erro
 		return err
 	}
 	defer os.Remove(tmp)
-	_ = dir // silenciar
 	return os.WriteFile(path, data, 0o644)
 }

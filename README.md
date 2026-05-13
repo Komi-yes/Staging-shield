@@ -137,9 +137,10 @@ del formato de entrada.
 
 ```
 staging-shield
-├── scan       Ejecuta evaluación completa (5 módulos)
-├── history    Lista corridas previas y muestra evolución del score
-└── version    Versión + plataforma + tamaño del catálogo SVR
+├── scan          Ejecuta evaluación completa (5 módulos)
+├── history       Lista corridas previas y muestra evolución del score
+├── audit verify  Verifica la cadena de integridad de los snapshots
+└── version       Versión + plataforma + tamaño del catálogo SVR
 ```
 
 ### `scan` — flags principales
@@ -161,6 +162,7 @@ staging-shield
 | `--no-color` | Desactiva colores ANSI |
 | `-v`, `--verbose` | Trazas detalladas de descubrimiento |
 | `--fail-on-noapt` | Exit code 2 si Apto=0 (útil en pipelines CI/CD) |
+| `--operator` | Identidad del operador para el registro de auditoría. Override del autodetect (env `STAGING_SHIELD_OPERATOR` → `git config user.email` → usuario del SO). |
 
 ---
 
@@ -205,6 +207,7 @@ El cliente está organizado en **5 módulos** que se ejecutan en pipeline:
 | `internal/scoring` | Aplica fórmula de score, score por dominio y aptitud crítica. |
 | `internal/storage` | Persistencia JSON del historial en `~/.staging-shield/history`. |
 | `internal/report` | Salida en consola con ANSI colors + reporte HTML autocontenido. |
+| `internal/audit` | Identidad del operador, versión del binario y cadena de hashes SHA-256 para auditabilidad de cada snapshot. |
 
 ---
 
@@ -450,12 +453,90 @@ Reporte responsivo con tema oscuro, embebido en el binario. Incluye:
 
 Cada corrida se guarda como `{env-slug}-{timestamp}.json` y contiene:
 
-- Versión del catálogo + nombre/stack/target del entorno.
+- `version` — versión del esquema del snapshot (actualmente `"1.2"`).
+- `environment`, `stack`, `target` — identificación del entorno evaluado.
+- `operator` (`{name, source}`) — quién ejecutó el scan y cómo se resolvió la identidad.
+- `tool` (`{version, revision, modified}`) — build de staging-shield que produjo el snapshot.
 - Stats agregadas (score global + por dominio + status counts + críticas).
 - Resultados detallados por SVR.
 - Evidencia técnica completa.
+- `integrity_hash` y `prev_hash` — eslabones de la cadena de integridad SHA-256.
 
-Esto cumple **SVR-MON-05** (corridas comparables a lo largo del tiempo).
+Esto cumple **SVR-MON-05** (corridas comparables a lo largo del tiempo) y añade trazabilidad de operador y herramienta para auditorías formales.
+
+---
+
+## Auditoría: identidad, versión y cadena de integridad
+
+Cada corrida es rastreable: el snapshot JSON incluye quién la ejecutó, qué versión de la herramienta la produjo y un hash SHA-256 que permite detectar cualquier modificación o borrado posterior. Esto cubre los requisitos de **provenance** y **tamper-evidence** habituales en auditorías SOC 2 e ISO 27001.
+
+### Identidad del operador
+
+El operador se resuelve automáticamente mediante la siguiente cadena de fallback:
+
+| Fuente | Cómo se obtiene |
+|---|---|
+| `flag` | `--operator <valor>` en la CLI |
+| `env` | Variable de entorno `STAGING_SHIELD_OPERATOR` (patrón recomendado para CI/CD) |
+| `git` | `git config user.email` dentro del directorio `--repo` |
+| `os` | Nombre de usuario del sistema operativo |
+| `none` | Ningún método disponible — se registra `"unknown"` |
+
+Al inicio de cada corrida el cliente imprime la identidad resuelta:
+
+```
+[audit] Operador=danielpalacios04@gmail.com (fuente=git) Versión=(devel) Revisión=e185e90c3b17
+```
+
+Para CI/CD, la forma más limpia es inyectar la identidad sin tocar el YAML de configuración:
+
+```bash
+STAGING_SHIELD_OPERATOR=ci-bot@miempresa.com ./staging-shield scan --config staging.yaml
+```
+
+### Versión de la herramienta
+
+El campo `tool` del snapshot registra la versión del binario (`version`), el commit de VCS (`revision`) y si había cambios sin commit (`modified`). La versión se lee de `runtime/debug.ReadBuildInfo()`, por lo que se embebe automáticamente al instalar con `go install`. Para builds de distribución, se puede fijar explícitamente:
+
+```bash
+go build -ldflags "-X github.com/stagingshield/staging-shield/internal/audit.BuildVersion=v1.0.0" -o staging-shield
+```
+
+### Cadena de hashes SHA-256
+
+Cada snapshot almacena dos campos:
+
+- `integrity_hash` — SHA-256 del JSON canónico del propio snapshot (con `integrity_hash` vacío al momento del cálculo).
+- `prev_hash` — `integrity_hash` del snapshot inmediatamente anterior **del mismo entorno**.
+
+Esto forma una cadena: editar cualquier byte de un snapshot invalida su hash; borrar un snapshot deja un `prev_hash` apuntando a la nada. Al final de cada corrida se imprime el eslabón añadido:
+
+```
+[audit] Snapshot hash=8f2a9c1d4b37 prev=a1c3e7b2f896
+```
+
+### Verificar la cadena
+
+```bash
+# Todos los entornos
+./staging-shield audit verify
+
+# Solo un entorno
+./staging-shield audit verify --env staging-pagos
+```
+
+Ejemplo de salida:
+
+```
+Fecha (UTC)            Entorno                        Operador             Versión    Hash (12)      Estado
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+2026-05-10 14:23:01    staging-pagos                  ci-bot@example.com   (devel)    8f2a9c1d4b37   OK
+2026-05-11 09:05:44    staging-pagos                  danielpalacios04     v1.0.0     3c8e21fa90b1   OK
+
+Cadena de integridad verificada: 2 snapshot(s) OK.
+```
+
+Exit codes: `0` = cadena intacta, `3` = cadena rota (con el snapshot y el motivo identificados). Los snapshots anteriores a la introducción de esta funcionalidad (sin `integrity_hash`) se muestran como `pre-chain` y no se consideran una ruptura.
 
 ---
 

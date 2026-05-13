@@ -12,20 +12,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stagingshield/staging-shield/internal/audit"
 	ctx "github.com/stagingshield/staging-shield/internal/context"
 	"github.com/stagingshield/staging-shield/internal/scoring"
 )
 
 // Snapshot es lo que se guarda en disco para cada corrida.
 type Snapshot struct {
-	Version     string            `json:"version"`
-	Environment string            `json:"environment"`
-	Stack       string            `json:"stack"`
-	Target      string            `json:"target"`
-	Timestamp   time.Time         `json:"timestamp"`
-	Stats       SnapshotStats     `json:"stats"`
-	Results     []ctx.RuleResult  `json:"results"`
-	Discovery   ctx.DiscoveryData `json:"discovery"`
+	Version       string            `json:"version"`
+	Environment   string            `json:"environment"`
+	Stack         string            `json:"stack"`
+	Target        string            `json:"target"`
+	Timestamp     time.Time         `json:"timestamp"`
+	Operator      audit.Operator    `json:"operator"`
+	Tool          audit.ToolInfo    `json:"tool"`
+	Stats         SnapshotStats     `json:"stats"`
+	Results       []ctx.RuleResult  `json:"results"`
+	Discovery     ctx.DiscoveryData `json:"discovery"`
+	PrevHash      string            `json:"prev_hash,omitempty"`
+	IntegrityHash string            `json:"integrity_hash,omitempty"`
 }
 
 // SnapshotStats es la versión serializable de scoring.Stats.
@@ -50,15 +55,28 @@ func DefaultDir() string {
 	return ".staging-shield/history"
 }
 
-// Save serializa la corrida actual a un archivo JSON único.
-func Save(dir string, ec *ctx.EvalContext, stats scoring.Stats) (string, error) {
+// Save serializa la corrida actual a un archivo JSON único con encadenamiento
+// SHA-256 para detectar ediciones o borrados posteriores.
+func Save(dir string, ec *ctx.EvalContext, stats scoring.Stats, op audit.Operator, tool audit.ToolInfo) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("creando directorio de historial: %w", err)
 	}
 
-	snap := buildSnapshot(ec, stats)
+	snap := buildSnapshot(ec, stats, op, tool)
 
+	// Resolve PrevHash: find the most recent snapshot for this environment.
 	envSlug := slugify(ec.EnvironmentName)
+	if prev := latestSnapshotForEnv(dir, envSlug); prev != nil {
+		snap.PrevHash = prev.IntegrityHash
+	}
+
+	// Compute integrity hash (with IntegrityHash field empty).
+	h, err := audit.CanonicalHash(snap)
+	if err != nil {
+		return "", fmt.Errorf("computando hash de integridad: %w", err)
+	}
+	snap.IntegrityHash = h
+
 	stamp := ec.Timestamp.UTC().Format("20060102T150405Z")
 	filename := fmt.Sprintf("%s-%s.json", envSlug, stamp)
 	full := filepath.Join(dir, filename)
@@ -71,6 +89,51 @@ func Save(dir string, ec *ctx.EvalContext, stats scoring.Stats) (string, error) 
 		return "", fmt.Errorf("escribiendo snapshot: %w", err)
 	}
 	return full, nil
+}
+
+// latestSnapshotForEnv returns the most recent on-disk snapshot for the given
+// environment slug, or nil if none exists. Filenames are timestamped UTC so
+// lexicographic max == chronological max.
+func latestSnapshotForEnv(dir, envSlug string) *Snapshot {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	prefix := envSlug + "-"
+	latest := ""
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), prefix) && e.Name() > latest {
+			latest = e.Name()
+		}
+	}
+	if latest == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(dir, latest))
+	if err != nil {
+		return nil
+	}
+	var s Snapshot
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil
+	}
+	return &s
+}
+
+// ReadSnapshot reads a single snapshot from a file path.
+func ReadSnapshot(path string) (*Snapshot, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var s Snapshot
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
 }
 
 // LoadAll devuelve todas las corridas guardadas, ordenadas por timestamp asc.
@@ -119,7 +182,7 @@ func LoadByEnvironment(dir, env string) ([]Snapshot, error) {
 	return out, nil
 }
 
-func buildSnapshot(ec *ctx.EvalContext, stats scoring.Stats) Snapshot {
+func buildSnapshot(ec *ctx.EvalContext, stats scoring.Stats, op audit.Operator, tool audit.ToolInfo) Snapshot {
 	domScores := make(map[string]float64, len(stats.DomainScores))
 	for d, s := range stats.DomainScores {
 		domScores[string(d)] = s
@@ -134,11 +197,13 @@ func buildSnapshot(ec *ctx.EvalContext, stats scoring.Stats) Snapshot {
 	}
 
 	return Snapshot{
-		Version:     "1.1",
+		Version:     "1.2",
 		Environment: ec.EnvironmentName,
 		Stack:       ec.StackType,
 		Target:      ec.Target,
 		Timestamp:   ec.Timestamp,
+		Operator:    op,
+		Tool:        tool,
 		Stats: SnapshotStats{
 			GlobalScore:      stats.GlobalScore,
 			DomainScores:     domScores,
@@ -154,6 +219,27 @@ func buildSnapshot(ec *ctx.EvalContext, stats scoring.Stats) Snapshot {
 		Results:   ec.Results,
 		Discovery: ec.Discovery,
 	}
+}
+
+// SnapshotsForChain converts a sorted slice of Snapshots into the minimal
+// representation that audit.VerifyChain requires. The Payload for each entry
+// is a copy of the snapshot with IntegrityHash cleared, matching the state
+// the hash was originally computed over.
+func SnapshotsForChain(snaps []Snapshot) []audit.SnapshotForChain {
+	out := make([]audit.SnapshotForChain, len(snaps))
+	for i, s := range snaps {
+		payload := s
+		payload.IntegrityHash = ""
+		out[i] = audit.SnapshotForChain{
+			Index:         i,
+			Timestamp:     s.Timestamp,
+			Environment:   s.Environment,
+			IntegrityHash: s.IntegrityHash,
+			PrevHash:      s.PrevHash,
+			Payload:       payload,
+		}
+	}
+	return out
 }
 
 func slugify(s string) string {
