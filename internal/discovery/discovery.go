@@ -990,7 +990,8 @@ var lowSignalValues = map[string]bool{
 var allDigits = regexp.MustCompile(`^\d+$`)
 
 // isLowSignalValue devuelve true para valores que producirían demasiados
-// falsos positivos: muy cortos, puramente numéricos o palabras genéricas.
+// falsos positivos: muy cortos, puramente numéricos, palabras genéricas,
+// o cualquier valor que referencie localhost / 127.0.0.1.
 func isLowSignalValue(v string) bool {
 	if len(v) < 8 {
 		return true
@@ -998,7 +999,11 @@ func isLowSignalValue(v string) bool {
 	if allDigits.MatchString(v) {
 		return true
 	}
-	return lowSignalValues[strings.ToLower(v)]
+	low := strings.ToLower(v)
+	if strings.Contains(low, "localhost") || strings.Contains(low, "127.0.0.1") {
+		return true
+	}
+	return lowSignalValues[low]
 }
 
 type envEntry struct {
