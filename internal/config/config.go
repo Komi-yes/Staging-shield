@@ -63,6 +63,14 @@ type FileConfig struct {
 		KeyPath string `yaml:"key_path"` // ruta a llave; preferir STAGING_SHIELD_SSH_KEY
 		UseSudo bool   `yaml:"use_sudo"` // sudo -n para comandos privilegiados
 	} `yaml:"ssh"`
+
+	// Serverless declara que el entorno es serverless / FaaS / managed.
+	// Cuando es true, el cliente marca automáticamente como "No aplica"
+	// un conjunto fijo de reglas de hardening de host cuya gestión es
+	// responsabilidad del proveedor. La lista vive en código y NO es
+	// configurable desde aquí — esa decisión pertenece al modelo, no a
+	// la configuración del usuario.
+	Serverless bool `yaml:"serverless"`
 }
 
 // Load lee y valida un archivo YAML, devolviendo un EvalContext listo para
@@ -151,6 +159,7 @@ func Build(fc FileConfig) (*context.EvalContext, error) {
 		SSHPort:         fc.SSH.Port,
 		SSHKeyPath:      fc.SSH.KeyPath,
 		SSHUseSudo:      fc.SSH.UseSudo,
+		Serverless:      fc.Serverless,
 	}
 	return ec, nil
 }

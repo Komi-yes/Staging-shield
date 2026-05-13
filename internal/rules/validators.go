@@ -26,7 +26,21 @@ func Validate(ec *ctx.EvalContext) {
 // evaluate dispatch entre los validadores específicos por ID.
 // Se mantiene un switch explícito para que cada regla tenga su lógica
 // trazable en código y sea fácil de auditar.
+//
+// Antes de dispatch, se consulta IsNotApplicable: si el entorno declara que
+// esta regla no aplica (sea por ExecutionModel="serverless" o por un
+// override explícito en config.yaml), se devuelve StatusNoAplica con la
+// justificación correspondiente y NUNCA se llega a la validación real.
+// Esto evita gastar ciclos en chequeos cuya respuesta ya conocemos.
 func evaluate(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
+	if na, reason := IsNotApplicable(rule.ID, ec); na {
+		return ctx.RuleResult{
+			Rule:     rule,
+			Status:   ctx.StatusNoAplica,
+			Evidence: reason,
+			Notes:    "El evaluador puede sobreescribir esta marca desde el centro de revisión del reporte HTML si considera que la regla sí debe evaluarse en este entorno.",
+		}
+	}
 	switch rule.ID {
 	case "SVR-NET-01":
 		return validateNet01(rule, ec)

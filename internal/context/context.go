@@ -39,6 +39,7 @@ const (
 	StatusNoCumple                                // c_i = 0.0
 	StatusFaltaEvidencia                          // No verificable automáticamente, sin evidencia
 	StatusManualRequerido                         // Requiere revisión manual (excluida del cálculo)
+	StatusNoAplica                                // No aplica al entorno (excluida del cálculo)
 )
 
 func (c ComplianceStatus) String() string {
@@ -53,6 +54,8 @@ func (c ComplianceStatus) String() string {
 		return "Falta evidencia"
 	case StatusManualRequerido:
 		return "Pendiente revisión manual"
+	case StatusNoAplica:
+		return "No aplica"
 	default:
 		return "Pendiente"
 	}
@@ -197,6 +200,27 @@ type EvalContext struct {
 	SSHPort    int    // 0 -> 22 default
 	SSHKeyPath string // ruta a llave privada; vacío usa agente ssh-agent o ~/.ssh
 	SSHUseSudo bool   // prefijar con `sudo -n` los comandos privilegiados
+
+	// Serverless declara que el entorno corre sobre arquitectura FaaS o
+	// managed (Vercel, Netlify, AWS Lambda + API Gateway, Cloudflare
+	// Workers, Cloud Run, Azure Functions, etc.). Cuando es true, el
+	// cliente marca automáticamente como "No aplica" un conjunto fijo de
+	// reglas de hardening de host cuya gestión es responsabilidad del
+	// proveedor (parches, firewall local, permisos del filesystem,
+	// auditd, logs en /var/log).
+	//
+	// La lista de reglas afectadas vive en internal/rules/not_applicable.go
+	// y es intencionalmente cerrada (hardcoded): la decisión sobre qué se
+	// considera "imposible de evaluar en serverless" pertenece al modelo,
+	// no a la configuración del usuario. Esto evita que un evaluador
+	// poco riguroso desactive reglas que sí debería evaluar usando este
+	// flag como pretexto.
+	//
+	// Las reglas NA por serverless se renderizan en el HTML SIN controles
+	// de veredicto: no se pueden sobreescribir desde la UI. Si el usuario
+	// considera que la regla sí aplica a su caso particular, debe poner
+	// serverless=false y aceptar el resto del modelo.
+	Serverless bool
 
 	// Resultados de descubrimiento
 	Discovery DiscoveryData

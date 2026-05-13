@@ -30,6 +30,7 @@ type htmlData struct {
 	NoEvidenceView      []ruleView
 	ManualView          []ruleView
 	PassedView          []ruleView
+	NotApplicableView   []ruleView          // Reglas declaradas no-aplicables (serverless u override)
 	PassedByDomain      []passedDomainBlock // PassedView agrupado por dominio para mostrar evidencia con transparencia
 	Recommendations     []string
 	OpenPortsList       []string
@@ -192,7 +193,8 @@ func buildHTMLData(ec *ctx.EvalContext, stats scoring.Stats) htmlData {
 		})
 	}
 
-	// Reglas - tres listas separadas
+	// Reglas - cuatro listas separadas + NotApplicableView para las
+	// declaradas no-aplicables (serverless + override del usuario).
 	for _, r := range ec.Results {
 		rv := toRuleView(r)
 		switch r.Status {
@@ -207,6 +209,8 @@ func buildHTMLData(ec *ctx.EvalContext, stats scoring.Stats) htmlData {
 			data.ManualView = append(data.ManualView, rv)
 		case ctx.StatusCumple, ctx.StatusCumpleParcial:
 			data.PassedView = append(data.PassedView, rv)
+		case ctx.StatusNoAplica:
+			data.NotApplicableView = append(data.NotApplicableView, rv)
 		}
 	}
 
@@ -339,11 +343,11 @@ func toRuleView(r ctx.RuleResult) ruleView {
 		Notes:     r.Notes,
 		Critical:  r.Rule.Critical,
 		// Solo permitimos revisión manual desde la UI sobre reglas que el
-		// motor automático no resolvió definitivamente. Las reglas que ya
-		// están en cumple/parcial/no-cumple por evidencia técnica no se
-		// pueden sobreescribir desde el HTML para no permitir que un
-		// veredicto humano "olvide" hallazgos del motor (la CLI sí lo
-		// permite con el sufijo _force, pero deliberadamente).
+		// motor automático no resolvió definitivamente. Las que ya están
+		// en cumple/parcial/no-cumple no se pueden sobreescribir.
+		// Las marcadas como NoAplica por serverless tampoco se pueden
+		// sobreescribir desde la UI (decisión del modelo, no del evaluador):
+		// el caller (buildHTMLData) ajusta CanReview a false en ese caso.
 		CanReview: r.Status == ctx.StatusManualRequerido || r.Status == ctx.StatusFaltaEvidencia,
 	}
 }
@@ -362,6 +366,8 @@ func statusKey(s ctx.ComplianceStatus) string {
 		return "missing"
 	case ctx.StatusManualRequerido:
 		return "manual"
+	case ctx.StatusNoAplica:
+		return "naplica"
 	default:
 		return "pending"
 	}
@@ -390,6 +396,8 @@ func statusClass(s ctx.ComplianceStatus) string {
 		return "missing"
 	case ctx.StatusManualRequerido:
 		return "manual"
+	case ctx.StatusNoAplica:
+		return "naplica"
 	default:
 		return "pending"
 	}

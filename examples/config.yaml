@@ -72,3 +72,21 @@ ssh:
   use_sudo: false # prefijar comandos privilegiados con "sudo -n".
                   # Requiere NOPASSWD en /etc/sudoers.d/ del host objetivo
                   # SOLO para los comandos que el cliente usa (no sudo total).
+
+# SERVERLESS. Declarar true cuando el entorno corre sobre FaaS / managed
+# (Vercel, Netlify, AWS Lambda + API Gateway, Cloudflare Workers, Cloud Run,
+# Azure Functions, etc.). Cuando es true, el cliente marca automáticamente
+# como "No aplica" un conjunto fijo de reglas de hardening de host cuya
+# gestión es responsabilidad del proveedor:
+#   - SVR-HAR-04 (parches del SO)
+#   - SVR-HAR-05 (firewall local)
+#   - SVR-HAR-08 (permisos de archivos sensibles)
+#   - SVR-HAR-09 (servicios legacy)
+#   - SVR-HAR-10 (auditoría / auditd)
+#   - SVR-MON-01 (logs en /var/log)
+#
+# La lista es cerrada y vive en código. Estas reglas se renderizan en el
+# reporte HTML SIN controles de veredicto: no se pueden sobreescribir
+# manualmente. Si considera que alguna sí aplica a su caso particular,
+# debe poner serverless=false y aceptar el modelo completo.
+serverless: false

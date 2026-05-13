@@ -382,6 +382,48 @@ Usar `withCredentials([sshUserPrivateKey(...)])` para inyectar la llave como arc
 
 ---
 
+## Entornos serverless: `serverless: true`
+
+Cuando el target es una arquitectura serverless (Vercel, Netlify, AWS Lambda + API Gateway, Cloudflare Workers, Cloud Run, Azure Functions), varias reglas de hardening dejan de tener sentido: el provider gestiona el SO subyacente, parches, firewall, filesystem y auditoría. En vez de generar ruido marcándolas como "falta evidencia" cada corrida, el cliente las marca automáticamente como **No aplica** cuando se declara serverless en `config.yaml`:
+
+```yaml
+serverless: true
+```
+
+Reglas marcadas como NA por serverless (lista fija, definida en el modelo):
+
+| Regla | Razón |
+|-------|-------|
+| SVR-HAR-04 | Parchado del SO → responsabilidad del provider |
+| SVR-HAR-05 | Firewall local no configurable → filtrado en API Gateway/edge |
+| SVR-HAR-08 | Sin filesystem persistente con `/etc/shadow` ni claves SSH |
+| SVR-HAR-09 | Sin servicios legacy: el provider expone solo HTTPS |
+| SVR-HAR-10 | auditd → gestionado por el provider; logs en CloudWatch/etc. |
+| SVR-MON-01 | Sin `/var/log`; logs van a stdout y los recoge el provider |
+
+### Comportamiento clave
+
+- Las reglas NA **no contribuyen al score** (ni al numerador ni al denominador): se excluyen del cálculo.
+- Las reglas NA **no afectan la aptitud**: una crítica declarada NA no rompe la promoción.
+- **No se pueden sobreescribir desde la UI**: las NA por serverless aparecen en el HTML sin botones de veredicto. La lista es parte del modelo, no de la configuración del evaluador. Si considera que alguna sí aplica a su caso, debe poner `serverless: false` y aceptar el modelo completo.
+- La declaración tiene **precedencia sobre la inspección**: si `serverless: true`, las reglas NA se aplican incluso si `--local-host-scan` o `--ssh-target` están activos (el cliente las inspecciona pero descarta el resultado).
+
+### En serverless el modo estándar es suficiente
+
+Con `serverless: true`, el modo estándar (sin SSH, sin local-host) cubre todas las reglas que aplican realmente al entorno. No necesitas `--ssh-target` ni `--local-host-scan`:
+
+```bash
+./staging-shield scan --config config.yaml --html-out reporte.html
+```
+
+Las verificaciones que siguen siendo automáticas:
+- DNS, puertos abiertos en el dominio público, TLS, headers de seguridad, banners.
+- Detección de admin interfaces expuestas (NET-08) y su nivel de autenticación (IAM-08).
+- Secretos en el repositorio con git-awareness (IAM-04, IAM-07).
+- Aislamiento de red contra producción si declaras `production.references` (NET-01).
+
+---
+
 ## Salidas
 
 ### Consola

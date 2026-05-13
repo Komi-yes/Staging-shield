@@ -148,6 +148,7 @@
   .badge.fail     { background: rgba(248,81,73,0.18);  color: #ff8a82; }
   .badge.missing  { background: rgba(79,156,249,0.18); color: var(--accent); }
   .badge.manual   { background: rgba(154,166,178,0.18); color: var(--text-dim); }
+  .badge.naplica  { background: rgba(154,166,178,0.08); color: var(--text-dim); border: 1px dashed rgba(154,166,178,0.4); }
   .badge.critical { background: rgba(255,94,94,0.25);  color: var(--critical); border: 1px solid rgba(255,94,94,0.5); }
 
   .evidence {
@@ -540,6 +541,16 @@
     {{range .Rules}}{{template "ruleCard" .}}{{end}}
   </div>
   {{end}}
+</section>
+{{end}}
+
+{{if .NotApplicableView}}
+<section>
+  <h2>SVR no aplicables al entorno <span class="count">({{len .NotApplicableView}} reglas — excluidas del score)</span></h2>
+  <p style="color: var(--text-dim); margin-bottom: 16px;">
+    Estas reglas se declararon como no aplicables porque el entorno fue declarado como <code>serverless: true</code>. La gestión de estos controles es responsabilidad del proveedor (parches del SO, firewall local, filesystem, auditoría, /var/log), no del equipo de aplicación. No contribuyen al Security Score ni al cálculo de cobertura. Como la lista forma parte del modelo, <strong>no pueden sobreescribirse desde esta vista</strong>: si considera que alguna sí aplica a su caso, debe declarar <code>serverless: false</code> en la configuración del entorno.
+  </p>
+  {{range .NotApplicableView}}{{template "ruleCard" .}}{{end}}
 </section>
 {{end}}
 
