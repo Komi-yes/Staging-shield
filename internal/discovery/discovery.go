@@ -973,3 +973,214 @@ func redactSecret(s string) string {
 	keep := 4
 	return s[:keep] + strings.Repeat("*", len(s)-keep*2) + s[len(s)-keep:]
 }
+
+// -------------------------- Cruce .env ↔ código --------------------------
+
+// lowSignalValues son valores que, aunque aparezcan en un .env, no tienen
+// suficiente especificidad para buscarlos en código sin generar ruido masivo.
+var lowSignalValues = map[string]bool{
+	"true": true, "false": true, "null": true, "nil": true,
+	"localhost": true, "127.0.0.1": true, "0.0.0.0": true,
+	"development": true, "production": true, "staging": true,
+	"test": true, "debug": true, "info": true, "warn": true, "warning": true, "error": true,
+	"yes": true, "no": true, "on": true, "off": true,
+	"utf-8": true, "utf8": true,
+}
+
+var allDigits = regexp.MustCompile(`^\d+$`)
+
+// isLowSignalValue devuelve true para valores que producirían demasiados
+// falsos positivos: muy cortos, puramente numéricos o palabras genéricas.
+func isLowSignalValue(v string) bool {
+	if len(v) < 8 {
+		return true
+	}
+	if allDigits.MatchString(v) {
+		return true
+	}
+	return lowSignalValues[strings.ToLower(v)]
+}
+
+type envEntry struct {
+	key     string
+	envFile string
+}
+
+// parseEnvFile lee un archivo .env y devuelve un mapa value→[]envEntry.
+// Soporta KEY=VALUE, KEY="VALUE" y KEY='VALUE'. Ignora comentarios e inline comments.
+func parseEnvFile(path, relPath string) map[string][]envEntry {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	result := make(map[string][]envEntry)
+	seen := make(map[string]bool) // key+value para deduplicar si el mismo pair aparece dos veces
+
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Cortar comentario inline solo si hay espacio antes del #
+		if idx := strings.Index(line, " #"); idx >= 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
+		eqIdx := strings.IndexByte(line, '=')
+		if eqIdx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:eqIdx])
+		val := strings.TrimSpace(line[eqIdx+1:])
+
+		// Quitar comillas envolventes
+		if len(val) >= 2 {
+			if (val[0] == '"' && val[len(val)-1] == '"') ||
+				(val[0] == '\'' && val[len(val)-1] == '\'') {
+				val = val[1 : len(val)-1]
+			}
+		}
+
+		if isLowSignalValue(val) {
+			continue
+		}
+		dedup := key + "\x00" + val
+		if seen[dedup] {
+			continue
+		}
+		seen[dedup] = true
+		result[val] = append(result[val], envEntry{key: key, envFile: relPath})
+	}
+	return result
+}
+
+// scanEnvValueLeaks cruza los valores declarados en archivos .env con el
+// código fuente para detectar hardcodeos directos. Se ejecuta después de
+// scanEnvFiles y gatherGitContext.
+func scanEnvValueLeaks(ec *ctx.EvalContext, log func(string, ...interface{})) {
+	if ec.RepoPath == "" {
+		return
+	}
+
+	// Mapas de tracking (mismo patrón que scanSecrets).
+	tracked := make(map[string]bool, len(ec.Discovery.Git.TrackedFiles))
+	for _, p := range ec.Discovery.Git.TrackedFiles {
+		tracked[normalizeRel(p)] = true
+	}
+	inHistory := make(map[string]bool, len(ec.Discovery.Git.HistoryFiles))
+	for _, p := range ec.Discovery.Git.HistoryFiles {
+		inHistory[normalizeRel(p)] = true
+	}
+
+	// Construir mapa value → []envEntry desde los .env presentes en disco.
+	// Los que solo están en historial git no se pueden leer fácilmente.
+	valueToEntries := make(map[string][]envEntry)
+	envFilePaths := make(map[string]bool) // rutas normalizadas de los propios .env
+	for _, ef := range ec.Discovery.EnvFiles {
+		absPath := filepath.Join(ec.RepoPath, filepath.FromSlash(ef.Path))
+		if _, err := os.Stat(absPath); err != nil {
+			continue // no está en disco
+		}
+		envFilePaths[normalizeRel(ef.Path)] = true
+		for val, entries := range parseEnvFile(absPath, ef.Path) {
+			valueToEntries[val] = append(valueToEntries[val], entries...)
+		}
+	}
+
+	if len(valueToEntries) == 0 {
+		log("Cruce .env↔código: sin valores de .env para comparar")
+		return
+	}
+	log("Cruce .env↔código: buscando %d valores distintos del .env en código fuente", len(valueToEntries))
+
+	const maxFileSize = 2 * 1024 * 1024
+	const maxFiles = 10000
+	count := 0
+
+	// Conjunto de findings para deduplicar (key+envFile+leakFile+line).
+	type findingKey struct {
+		key, envFile, leakFile string
+		line                   int
+	}
+	emitted := make(map[findingKey]bool)
+
+	_ = filepath.WalkDir(ec.RepoPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if pathsSkipped[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if count >= maxFiles {
+			return errors.New("límite de archivos alcanzado")
+		}
+		count++
+
+		name := d.Name()
+		ext := strings.ToLower(filepath.Ext(name))
+		if !extsScanned[ext] && !fileNamesScanned[name] {
+			return nil
+		}
+
+		rel, _ := filepath.Rel(ec.RepoPath, path)
+		relNorm := normalizeRel(rel)
+
+		// No buscar el valor dentro de su propio .env
+		if envFilePaths[relNorm] {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil || info.Size() > maxFileSize {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+
+		fileIsFixture := isTestFixturePath(rel)
+		lines := strings.Split(string(data), "\n")
+
+		for val, entries := range valueToEntries {
+			for i, line := range lines {
+				if !strings.Contains(line, val) {
+					continue
+				}
+				isFixture := fileIsFixture || looksLikePlaceholder(val)
+				for _, entry := range entries {
+					fk := findingKey{entry.key, entry.envFile, relNorm, i + 1}
+					if emitted[fk] {
+						continue
+					}
+					emitted[fk] = true
+					ec.Discovery.EnvValueLeaks = append(ec.Discovery.EnvValueLeaks, ctx.EnvValueLeakFinding{
+						Key:          entry.key,
+						EnvFile:      entry.envFile,
+						LeakFile:     rel,
+						Line:         i + 1,
+						ValuePreview: redactSecret(val),
+						IsFixture:    isFixture,
+						Tracked:      tracked[relNorm],
+						InHistory:    inHistory[relNorm],
+					})
+				}
+			}
+		}
+		return nil
+	})
+
+	if len(ec.Discovery.EnvValueLeaks) > 0 {
+		real, fixture := 0, 0
+		for _, f := range ec.Discovery.EnvValueLeaks {
+			if f.IsFixture {
+				fixture++
+			} else {
+				real++
+			}
+		}
+		log("Valores del .env hardcodeados en código: %d reales, %d en archivos test/ejemplo (no penalizan)", real, fixture)
+	}
+}
