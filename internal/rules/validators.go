@@ -705,27 +705,53 @@ func validateIam04(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 		fixtureNote = fmt.Sprintf(" Se filtraron %d hallazgos en archivos de test/ejemplo (no penalizan, ver tabla de evidencia técnica).", len(fixtureFindings))
 	}
 
+	// Cruce .env ↔ código: valores del .env que aparecen hardcodeados en
+	// archivos de código. Se evalúan junto a los hallazgos de regex porque
+	// representan exactamente el mismo riesgo (un secreto fuera del .env),
+	// pero la fuente de verdad es distinta: aquí el "patrón" es el valor
+	// real del .env, no una regex genérica.
+	envLeaksReal := []ctx.EnvValueLeakFinding{}
+	envLeaksFixture := []ctx.EnvValueLeakFinding{}
+	for _, l := range ec.Discovery.EnvValueLeaks {
+		if l.IsFixture {
+			envLeaksFixture = append(envLeaksFixture, l)
+		} else {
+			envLeaksReal = append(envLeaksReal, l)
+		}
+	}
+	envLeakNote := ""
+	if len(envLeaksReal) > 0 || len(envLeaksFixture) > 0 {
+		parts := []string{}
+		if len(envLeaksReal) > 0 {
+			parts = append(parts, fmt.Sprintf("%d valores del .env aparecen hardcodeados en código", len(envLeaksReal)))
+		}
+		if len(envLeaksFixture) > 0 {
+			parts = append(parts, fmt.Sprintf("%d en archivos de test/ejemplo (no penalizan)", len(envLeaksFixture)))
+		}
+		envLeakNote = " " + strings.Join(parts, "; ") + "."
+	}
+
 	// Sin repo git, no hay forma de distinguir local vs expuesto: usar la
 	// señal disponible (presencia en disco), pero excluyendo fixtures.
 	if !ec.Discovery.Git.Available {
-		if totalReal == 0 {
+		if totalReal == 0 && len(envLeaksReal) == 0 {
 			return ctx.RuleResult{
 				Rule:     rule,
 				Status:   ctx.StatusCumple,
-				Evidence: fmt.Sprintf("Búsqueda en %s no encontró patrones de secretos en archivos de configuración, código o manifiestos (excluyendo tests/ejemplos).%s", ec.RepoPath, fixtureNote),
+				Evidence: fmt.Sprintf("Búsqueda en %s no encontró patrones de secretos ni valores del .env hardcodeados en código (excluyendo tests/ejemplos).%s%s", ec.RepoPath, fixtureNote, envLeakNote),
 				Notes:    "El repositorio no es un repo git, por lo que no se pudo distinguir entre archivos públicos y solo locales. Inicialice git para una evaluación más justa.",
 			}
 		}
 		hi := countHighSeverity(realFindings)
 		st := ctx.StatusCumpleParcial
-		if hi > 0 {
+		if hi > 0 || len(envLeaksReal) > 0 {
 			st = ctx.StatusNoCumple
 		}
 		return ctx.RuleResult{
 			Rule:     rule,
 			Status:   st,
-			Evidence: fmt.Sprintf("Se detectaron %d posibles secretos en el repositorio (%d de severidad alta).%s El repositorio no es git, no fue posible filtrar por exposición pública.", totalReal, hi, fixtureNote),
-			Notes:    "Rote las credenciales detectadas y muévalas a un gestor de secretos. Si son falsos positivos, mueva el archivo a un directorio test/ o renómbrelo con sufijo .test/.spec para que el cliente los excluya.",
+			Evidence: fmt.Sprintf("Se detectaron %d posibles secretos por patrón (%d de severidad alta) y %d casos de valores .env hardcodeados.%s%s El repositorio no es git, no fue posible filtrar por exposición pública.", totalReal, hi, len(envLeaksReal), fixtureNote, envLeakNote),
+			Notes:    "Rote las credenciales detectadas, muévalas a un gestor de secretos y reemplace los hardcodeos por lectura de variables de entorno. Si son falsos positivos, mueva el archivo a un directorio test/ para que el cliente los excluya.",
 		}
 	}
 
@@ -745,12 +771,29 @@ func validateIam04(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 		}
 	}
 
-	if len(exposed) == 0 && len(historical) == 0 {
-		ev := fmt.Sprintf("No se encontraron secretos en archivos trackeados por git ni en el historial (excluyendo fixtures). Total escaneado: %d archivos. Hallazgos solo locales (no expuestos): %d.%s",
-			len(ec.Discovery.Git.TrackedFiles), len(localOnly), fixtureNote)
+	// Lo mismo para env-value-leaks: trackeado e historial son exposición
+	// pública del valor real del .env; solo-local indica copia descuidada
+	// pero no publicada (todavía).
+	envLeaksExposed := []ctx.EnvValueLeakFinding{}
+	envLeaksHistorical := []ctx.EnvValueLeakFinding{}
+	envLeaksLocalOnly := []ctx.EnvValueLeakFinding{}
+	for _, l := range envLeaksReal {
+		switch {
+		case l.Tracked:
+			envLeaksExposed = append(envLeaksExposed, l)
+		case l.InHistory:
+			envLeaksHistorical = append(envLeaksHistorical, l)
+		default:
+			envLeaksLocalOnly = append(envLeaksLocalOnly, l)
+		}
+	}
+
+	if len(exposed) == 0 && len(historical) == 0 && len(envLeaksExposed) == 0 && len(envLeaksHistorical) == 0 {
+		ev := fmt.Sprintf("No se encontraron secretos por patrón ni valores del .env hardcodeados en archivos trackeados o en historial (excluyendo fixtures). Archivos escaneados: %d. Hallazgos solo locales: %d secretos por patrón + %d copias de valores .env.%s%s",
+			len(ec.Discovery.Git.TrackedFiles), len(localOnly), len(envLeaksLocalOnly), fixtureNote, envLeakNote)
 		notes := ""
-		if len(localOnly) > 0 {
-			notes = "Hay secretos en archivos locales no trackeados (típicamente .env de desarrollo). No constituyen exposición pública mientras .gitignore impida su inclusión accidental, pero conviene rotarlos si se sospecha que pudieron filtrarse por otra vía."
+		if len(localOnly) > 0 || len(envLeaksLocalOnly) > 0 {
+			notes = "Hay material sensible en archivos locales no trackeados (típicamente .env de desarrollo y copias en scripts locales). No constituyen exposición pública mientras .gitignore impida su inclusión accidental, pero conviene revisar por higiene."
 		}
 		return ctx.RuleResult{
 			Rule:     rule,
@@ -765,17 +808,26 @@ func validateIam04(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 
 	parts := []string{}
 	if len(exposed) > 0 {
-		parts = append(parts, fmt.Sprintf("%d en archivos trackeados (%d severidad alta)", len(exposed), hiExposed))
+		parts = append(parts, fmt.Sprintf("%d secretos por patrón en archivos trackeados (%d severidad alta)", len(exposed), hiExposed))
 	}
 	if len(historical) > 0 {
-		parts = append(parts, fmt.Sprintf("%d en archivos del historial git (%d severidad alta)", len(historical), hiHist))
+		parts = append(parts, fmt.Sprintf("%d secretos por patrón en historial git (%d severidad alta)", len(historical), hiHist))
 	}
-	if len(localOnly) > 0 {
-		parts = append(parts, fmt.Sprintf("%d solo locales, no expuestos públicamente", len(localOnly)))
+	if len(envLeaksExposed) > 0 {
+		parts = append(parts, fmt.Sprintf("%d valores del .env hardcodeados en archivos trackeados", len(envLeaksExposed)))
+	}
+	if len(envLeaksHistorical) > 0 {
+		parts = append(parts, fmt.Sprintf("%d valores del .env hardcodeados en historial git", len(envLeaksHistorical)))
+	}
+	if len(localOnly) > 0 || len(envLeaksLocalOnly) > 0 {
+		parts = append(parts, fmt.Sprintf("%d hallazgos solo locales, no expuestos públicamente", len(localOnly)+len(envLeaksLocalOnly)))
 	}
 
 	st := ctx.StatusCumpleParcial
-	if hiExposed > 0 || hiHist > 0 {
+	// "No cumple" si hay secretos de severidad alta expuestos O si hay
+	// CUALQUIER valor del .env hardcodeado en código trackeado/histórico:
+	// esto último es de definición una fuga de credenciales reales.
+	if hiExposed > 0 || hiHist > 0 || len(envLeaksExposed) > 0 || len(envLeaksHistorical) > 0 {
 		st = ctx.StatusNoCumple
 	}
 
@@ -783,7 +835,7 @@ func validateIam04(rule ctx.SVR, ec *ctx.EvalContext) ctx.RuleResult {
 		Rule:     rule,
 		Status:   st,
 		Evidence: "Hallazgos: " + strings.Join(parts, "; ") + "." + fixtureNote,
-		Notes:    "Los secretos en archivos trackeados o en historial git deben considerarse comprometidos: rótelos de inmediato y muévalos a un gestor de secretos. Para limpiar el historial considere git filter-repo o BFG. Los hallazgos solo locales no afectan el score pero conviene revisarlos por higiene.",
+		Notes:    "Los secretos en archivos trackeados o en historial git deben considerarse comprometidos: rótelos de inmediato y muévalos a un gestor de secretos. Para los valores hardcodeados en código, reemplácelos por lectura de variables de entorno (process.env.X / os.environ['X']). Para limpiar el historial use git filter-repo o BFG.",
 	}
 }
 

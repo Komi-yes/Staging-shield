@@ -258,6 +258,12 @@ type DiscoveryData struct {
 	// contenido por sí solo.
 	EnvFiles []EnvFileFinding `json:"env_files"`
 
+	// EnvValueLeaks lista los casos donde un valor específico de un .env
+	// aparece hardcodeado en archivos de código fuente. Es la verificación
+	// "el .env y el código no deben tener los mismos secretos copiados".
+	// Se rellena después de scanEnvFiles + scanSecrets.
+	EnvValueLeaks []EnvValueLeakFinding `json:"env_value_leaks,omitempty"`
+
 	// LocalHost contiene los resultados de las verificaciones invasivas
 	// sobre el host LOCAL del evaluador. Solo se rellena cuando el usuario
 	// activó --local-host-scan. Si está vacío, todos los validadores que
@@ -339,6 +345,36 @@ type GitContext struct {
 	TrackedFiles  []string `json:"tracked_files,omitempty"` // rutas relativas trackeadas hoy
 	HistoryFiles  []string `json:"history_files,omitempty"` // archivos que alguna vez existieron en el historial
 	GitignoreSeen bool     `json:"gitignore_seen"`
+}
+
+// EnvValueLeakFinding describe un caso donde un VALOR específico declarado
+// en un archivo .env aparece hardcodeado en código fuente. Detectarlo es
+// importante porque, aunque el .env esté correctamente gitignored, si el
+// mismo secreto está copiado a un archivo de código sí es exposición real:
+// el .env entrenó al desarrollador a tratarlo como secreto y el código lo
+// trata como literal.
+//
+// Casos típicos: credenciales de BD pegadas en un seeder, llaves API
+// hardcodeadas en un script de migración, tokens en archivos de test.
+type EnvValueLeakFinding struct {
+	// Key: nombre de la variable en el .env (ej: "DATABASE_URL").
+	Key string `json:"key"`
+	// EnvFile: archivo .env donde está declarada (ej: ".env.staging").
+	EnvFile string `json:"env_file"`
+	// LeakFile: archivo de código donde apareció el valor hardcodeado.
+	LeakFile string `json:"leak_file"`
+	Line     int    `json:"line"`
+	// ValuePreview: primeros y últimos caracteres del valor para que el
+	// reporte identifique cuál es, sin reproducir el secreto completo.
+	ValuePreview string `json:"value_preview"`
+	// IsFixture: true si el archivo donde apareció el hardcodeo está en
+	// rutas de test, fixtures, examples, etc. Estos no penalizan SVR-IAM-04
+	// pero se reportan en sección aparte, exactamente igual que con el
+	// detector de secretos genéricos.
+	IsFixture bool `json:"is_fixture,omitempty"`
+	// Tracked / InHistory: estado git del LeakFile (no del EnvFile).
+	Tracked   bool `json:"tracked,omitempty"`
+	InHistory bool `json:"in_history,omitempty"`
 }
 
 // EnvFileFinding describe el estado de un archivo .env (o equivalente)

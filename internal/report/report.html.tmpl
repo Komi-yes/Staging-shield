@@ -676,6 +676,36 @@
   </details>
   {{end}}
 
+  {{if .Discovery.EnvValueLeaks}}
+  <details open>
+    <summary>Valores del .env hardcodeados en código ({{len .Discovery.EnvValueLeaks}})</summary>
+    <p style="color: var(--text-dim); margin: 8px 0 12px; font-size: 12px;">
+      Cada fila muestra un caso donde un VALOR específico declarado en un <code>.env</code> también aparece literalmente en un archivo de código fuente. Esto suele indicar copia-pega descuidada: aunque el <code>.env</code> esté correctamente <code>gitignored</code>, si el mismo secreto está pegado en código sí hay exposición real. Los casos en rutas de test/ejemplo no penalizan SVR-IAM-04 pero se listan por transparencia.
+    </p>
+    <table class="discovery-table">
+      <tr><th>Variable</th><th>Definida en</th><th>Aparece en</th><th>Línea</th><th>Valor (redactado)</th><th>Exposición</th><th>Tipo</th></tr>
+      {{range .Discovery.EnvValueLeaks}}
+      <tr{{if .IsFixture}} style="opacity: 0.55"{{end}}>
+        <td><code>{{.Key}}</code></td>
+        <td><code>{{.EnvFile}}</code></td>
+        <td><code>{{.LeakFile}}</code></td>
+        <td>{{.Line}}</td>
+        <td><code>{{.ValuePreview}}</code></td>
+        <td>
+          {{if .Tracked}}<span class="env-state-tag tracked">trackeado</span>
+          {{else if .InHistory}}<span class="env-state-tag history">en historial</span>
+          {{else}}<span class="env-state-tag gitignored">solo local</span>{{end}}
+        </td>
+        <td>
+          {{if .IsFixture}}<span class="env-state-tag gitignored">test/ejemplo</span>
+          {{else}}<span class="env-state-tag tracked">real</span>{{end}}
+        </td>
+      </tr>
+      {{end}}
+    </table>
+  </details>
+  {{end}}
+
   {{if .Discovery.EnvFiles}}
   <details open>
     <summary>Archivos .env analizados ({{len .Discovery.EnvFiles}}) — análisis con conciencia de git</summary>

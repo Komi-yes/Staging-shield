@@ -99,6 +99,7 @@ type discoveryView struct {
 	Secrets             []ctx.SecretFinding
 	Git                 ctx.GitContext
 	EnvFiles            []ctx.EnvFileFinding
+	EnvValueLeaks       []ctx.EnvValueLeakFinding
 	LocalHost           ctx.LocalHostData
 }
 
@@ -280,6 +281,7 @@ func buildHTMLData(ec *ctx.EvalContext, stats scoring.Stats) htmlData {
 		Secrets:             ec.Discovery.SecretFindings,
 		Git:                 ec.Discovery.Git,
 		EnvFiles:            ec.Discovery.EnvFiles,
+		EnvValueLeaks:       ec.Discovery.EnvValueLeaks,
 		LocalHost:           ec.Discovery.LocalHost,
 	}
 	for k, v := range ec.Discovery.HTTPHeaders {

@@ -47,6 +47,7 @@ func Run(ec *ctx.EvalContext, verbose bool) {
 	gatherGitContext(ec, log)
 	scanSecrets(ec, log)
 	scanEnvFiles(ec, log)
+	scanEnvValueLeaks(ec, log)
 
 	// Modo invasivo opt-in. Solo lee información sobre el host LOCAL donde
 	// corre el cliente. Si el usuario no lo activó, salta esta fase entera
