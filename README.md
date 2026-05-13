@@ -488,11 +488,71 @@ Al inicio de cada corrida el cliente imprime la identidad resuelta:
 [audit] Operador=danielpalacios04@gmail.com (fuente=git) Versión=(devel) Revisión=e185e90c3b17
 ```
 
-Para CI/CD, la forma más limpia es inyectar la identidad sin tocar el YAML de configuración:
+#### Ejemplos de uso
+
+**1. Flag explícito — útil cuando varios auditores comparten una misma cuenta o el `git config` local no refleja al evaluador real:**
 
 ```bash
-STAGING_SHIELD_OPERATOR=ci-bot@miempresa.com ./staging-shield scan --config staging.yaml
+# Linux / macOS:
+./staging-shield scan \
+  --config examples/config.yaml \
+  --operator "ana.lopez@miempresa.com" \
+  --html-out reporte-ana.html
+
+# En la salida:
+# [audit] Operador=ana.lopez@miempresa.com (fuente=flag) Versión=v1.0.0 Revisión=e185e90c3b17
 ```
+
+```powershell
+# Windows (PowerShell):
+.\staging-shield.exe scan `
+  --config examples\config.yaml `
+  --operator "ana.lopez@miempresa.com" `
+  --html-out reporte-ana.html
+```
+
+**2. Variable de entorno — patrón recomendado para pipelines CI/CD:**
+
+```bash
+export STAGING_SHIELD_OPERATOR="github-actions-bot"
+./staging-shield scan --config staging.yaml --html-out reporte.html
+
+# En la salida:
+# [audit] Operador=github-actions-bot (fuente=env) Versión=v1.0.0 Revisión=e185e90c3b17
+```
+
+```powershell
+# Windows (PowerShell):
+$env:STAGING_SHIELD_OPERATOR = "github-actions-bot"
+.\staging-shield.exe scan --config staging.yaml --html-out reporte.html
+```
+
+**3. Autodetect desde `git config user.email` — default sin configurar nada:**
+
+```bash
+# Si git config user.email = danielpalacios04@gmail.com
+./staging-shield scan --config staging.yaml --html-out reporte.html
+
+# En la salida:
+# [audit] Operador=danielpalacios04@gmail.com (fuente=git) Versión=v1.0.0 Revisión=e185e90c3b17
+```
+
+En los tres casos el campo `operator` del snapshot JSON queda así:
+
+```json
+{
+  "operator": {
+    "name": "ana.lopez@miempresa.com",
+    "source": "flag"
+  },
+  "tool": {
+    "version": "v1.0.0",
+    "revision": "e185e90c3b17"
+  }
+}
+```
+
+Para buscar quién corrió cada scan en el historial: `jq '.operator' ~/.staging-shield/history/*.json`.
 
 ### Versión de la herramienta
 
@@ -517,26 +577,69 @@ Esto forma una cadena: editar cualquier byte de un snapshot invalida su hash; bo
 
 ### Verificar la cadena
 
+**Verificar todos los entornos:**
+
 ```bash
-# Todos los entornos
+# Linux / macOS:
 ./staging-shield audit verify
 
-# Solo un entorno
-./staging-shield audit verify --env staging-pagos
+# Windows (PowerShell):
+.\staging-shield.exe audit verify
 ```
 
-Ejemplo de salida:
+**Verificar solo un entorno:**
+
+```bash
+# Linux / macOS:
+./staging-shield audit verify --env staging-pagos
+
+# Windows (PowerShell):
+.\staging-shield.exe audit verify --env staging-pagos
+```
+
+**Directorio de historial alternativo:**
+
+```bash
+./staging-shield audit verify --history-dir /ruta/al/historial --env staging-pagos
+```
+
+Ejemplo de salida cuando la cadena está intacta:
 
 ```
 Fecha (UTC)            Entorno                        Operador             Versión    Hash (12)      Estado
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 2026-05-10 14:23:01    staging-pagos                  ci-bot@example.com   (devel)    8f2a9c1d4b37   OK
-2026-05-11 09:05:44    staging-pagos                  danielpalacios04     v1.0.0     3c8e21fa90b1   OK
+2026-05-11 09:05:44    staging-pagos                  ana.lopez@miemp…     v1.0.0     3c8e21fa90b1   OK
 
 Cadena de integridad verificada: 2 snapshot(s) OK.
 ```
 
-Exit codes: `0` = cadena intacta, `3` = cadena rota (con el snapshot y el motivo identificados). Los snapshots anteriores a la introducción de esta funcionalidad (sin `integrity_hash`) se muestran como `pre-chain` y no se consideran una ruptura.
+Ejemplo de salida cuando se detecta un snapshot modificado o borrado:
+
+```
+Fecha (UTC)            Entorno                        Operador             Versión    Hash (12)      Estado
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+2026-05-10 14:23:01    staging-pagos                  ci-bot@example.com   (devel)    8f2a9c1d4b37   OK
+2026-05-11 09:05:44    staging-pagos                  ana.lopez@miemp…     v1.0.0     3c8e21fa90b1   ROTO: hash-mismatch
+
+Cadena rota: 1 ruptura(s) detectada(s).
+  · [2026-05-11 09:05:44] staging-pagos — hash-mismatch: stored=3c8e21fa90b1 recomputed=7f4a12bc9e03
+```
+
+**Integración en pipelines CI/CD** — bloquear el pipeline si alguien modificó un snapshot:
+
+```bash
+./staging-shield audit verify --env staging-pagos || exit 1
+```
+
+```yaml
+# GitHub Actions:
+- name: Verificar integridad de historial
+  run: ./staging-shield audit verify --env staging-pagos
+  # Falla con exit code 3 si la cadena está rota
+```
+
+Exit codes: `0` = cadena intacta, `3` = cadena rota. Los snapshots anteriores a esta funcionalidad (sin `integrity_hash`) se muestran como `pre-chain` y no se consideran ruptura.
 
 ---
 
