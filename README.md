@@ -676,6 +676,14 @@ Documentadas en el proyecto y respetadas en el cliente:
   en `expected_ports`. No es un sustituto de un escaneo completo con nmap.
 
 ---
+## Autores
+
+Daniel Palacios
+
+Juan David Roa
+
+
+---
 
 ## Licencia
 
